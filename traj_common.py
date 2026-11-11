@@ -142,7 +142,10 @@ def enforce_chord_gaps(out_notes, min_gap=200.0, xlim=675.0):
         for i in range(1, len(xs)):          # 从左到右推
             if xs[i] - xs[i - 1] < min_gap:
                 xs[i] = xs[i - 1] + min_gap
-        if xs[-1] > xlim:                     # 溢出：从右到左反向推
+        if xs[-1] > xlim:                     # 溢出：锚定右边界后从右到左反向推
+            # 左推后相邻间距已全部 >= min_gap，若不先把 xs[-1] 锚到 xlim，
+            # 反向条件恒为假（死代码），clip 会把溢出组压叠在同一像素上
+            xs[-1] = xlim
             for i in range(len(xs) - 2, -1, -1):
                 if xs[i + 1] - xs[i] < min_gap:
                     xs[i] = xs[i + 1] - min_gap
