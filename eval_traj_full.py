@@ -88,9 +88,11 @@ model  = load_notes('infer_traj_full_lost_requiem.json')
 # 模型按 (t3, line_id) 索引
 midx = defaultdict(list)
 for n in model: midx[(r3(n['t']), n.get('line_id',-1))].append(float(n['x']))
-# parsed 按 t3 分组
+# parsed 按 t3 分组（只留 Tap/Hold，与模型输出同口径；Drag/Flick 同刻对进分母
+# 但永远配不上两个 x，会把"成功配对双押 ts"误报为模型漏配对）
 pg = defaultdict(list)
-for n in parsed: pg[r3(n['t'])].append(n)
+for n in parsed:
+    if int(n.get('type', 1)) in (1, 2): pg[r3(n['t'])].append(n)
 dbl_ts = [t for t,ns in pg.items() if len(ns)==2]
 print("parsed 双押时间戳数(恰好2音):", len(dbl_ts))
 spacings = []

@@ -141,8 +141,11 @@ def main():
                 if aug_rng.rand() < args.aug_blank:
                     wy2 = np.clip(wy - wy[0], -X_CLIP, X_CLIP).astype(np.float32)
                     wx2 = wx.copy()
-                    # chord_x 是绝对位置特征，必须同步平移，否则 X/y 语义不一致
-                    wx2[:, 6] = np.clip(wx[:, 6] - wy[0], -X_CLIP, X_CLIP).astype(np.float32)
+                    # chord_x 是绝对位置特征，必须同步平移，否则 X/y 语义不一致；
+                    # 但 0 是"无和弦"哨兵（line_features 初始化为 0），不能参与平移，
+                    # 否则 0-wy[0] 会凭空造出幻影和弦位置，污染增强窗口
+                    nz = wx2[:, 6] != 0
+                    wx2[nz, 6] = np.clip(wx2[nz, 6] - wy[0], -X_CLIP, X_CLIP).astype(np.float32)
                     new_wins.append((wx2, wy2))
                     n_aug += 1
             aug_items.append((fid, new_wins))

@@ -78,6 +78,7 @@ def train():
 
     os.makedirs(ckdir, exist_ok=True)
     start_ep, best_val, best_ep, wait = 0, float('inf'), -1, 0
+    rebase_val = False
     if args.init_from:
         ip = artifact_path(args.init_from)
         ck = torch.load(ip, map_location='cpu')
@@ -96,7 +97,11 @@ def train():
         if st.get('metric') == 'val_mse':
             best_val, best_ep, wait = st['best_val'], st['best_epoch'], st['wait']
         else:
-            print("[resume] 旧 state 指标口径为总损失，best_val 重置为 inf", flush=True)
+            # 旧口径 best_val 是含正则的总损失，与 val_mse 不可比；若直接置 inf，
+            # 续训第一轮 vm<inf 恒真、必覆写 model.pth（可能以更差权重顶掉已有最优）。
+            # 改为延迟到 run 定义后，用当前(已加载)权重实测 val MSE 作基线
+            rebase_val = True
+            print("[resume] 旧 state 指标口径为总损失，稍后以当前权重重测 val MSE 为基线", flush=True)
         print(f"[resume] ep{start_ep} best={best_val:.5f}@{best_ep}", flush=True)
 
     def run(X, y, grad):
@@ -130,6 +135,12 @@ def train():
         return s_tot / cnt, s_mse / cnt
 
     t0 = time.time()
+    if rebase_val:
+        # 旧口径 resume 基线重测：与训练循环内的 val 评估完全同口径（纯 MSE，eval 模式），
+        # 后续 epoch 只有真的更优才覆写 model.pth
+        _, best_val = run(Xva, yva, False)
+        best_ep = start_ep
+        print(f"[resume] 基线重测: 当前权重 val_mse={best_val:.5f}", flush=True)
     for ep in range(start_ep, args.epochs):
         trl, trm = run(Xtr, ytr, True)
         vt, vm = run(Xva, yva, False)

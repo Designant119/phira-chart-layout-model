@@ -53,7 +53,10 @@ def infer_notes(fid, model, chord_map, level_norm):
             lnotes = sorted(lines[lid], key=lambda n: n["t"])
 
             def emit(nt, x, src):
-                out.append({"t": nt["t"], "type": nt.get("type", 1), "x": float(x),
+                # 训练标签 clip 到 ±1.2(=±810px)，模型回归值乘 675 后可能越界；
+                # enforce_chord_gaps 只裁同刻>=2 的音，单音必须在这里截到合法域 ±675
+                out.append({"t": nt["t"], "type": nt.get("type", 1),
+                            "x": float(np.clip(x, -X_SCALE, X_SCALE)),
                             "line_id": lid, "dur": nt.get("dur", 0.0), "src": src})
 
             if len(lnotes) < 4:  # 训练时这类线不进数据集，模型没见过，沿用原谱
