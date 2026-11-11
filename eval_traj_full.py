@@ -21,9 +21,10 @@ def mae_compare(fid, pred_file, orig_file):
     # orig 每个 t3 上的音数（双押判定基准）
     orig_tcount = Counter(r3(n['t']) for n in orig)
 
-    pairs = []          # (pred_x, orig_x, t3)
+    pairs = []          # (pred_x, orig_x, t3, src)
     unmatched = 0
     used_orig = defaultdict(int)
+    has_src = any('src' in p for p in pred)
     for p in pred:
         key = (r3(p['t']), p.get('line_id', -1))
         lst = orig_idx.get(key)
@@ -36,11 +37,14 @@ def mae_compare(fid, pred_file, orig_file):
             unmatched += 1
             continue
         o = lst[i]; used_orig[key] += 1
-        pairs.append((float(p['x']), float(o['x']), r3(p['t'])))
+        # src 缺省按 model 计（旧版 infer 输出无该字段，其 fallback 不可区分）
+        pairs.append((float(p['x']), float(o['x']), r3(p['t']), p.get('src', 'model')))
 
     dbl, sgl = [], []
-    for px, ox, t3 in pairs:
+    by_src = {'model': [], 'fallback': []}
+    for px, ox, t3, src in pairs:
         (dbl if orig_tcount[t3] >= 2 else sgl).append(abs(px - ox))
+        by_src.setdefault(src, []).append(abs(px - ox))
     def m(a): return statistics.mean(a) if a else float('nan')
     return {
         'fid': fid, 'pred': pred_file,
@@ -48,11 +52,20 @@ def mae_compare(fid, pred_file, orig_file):
         'n_paired': len(pairs), 'n_unmatched': unmatched,
         'dbl_n': len(dbl), 'dbl_mae': m(dbl),
         'sgl_n': len(sgl), 'sgl_mae': m(sgl),
+        'has_src': has_src, 'by_src': {k: (len(v), m(v)) for k, v in by_src.items()},
     }
 
 def show(tag, r):
     print(f"[{tag}] {r['fid']}  pred={r['n_pred']} orig={r['n_orig']} paired={r['n_paired']} unmatched={r['n_unmatched']}")
     print(f"    双押MAE={r['dbl_mae']:.2f}px (n={r['dbl_n']})   单音MAE={r['sgl_mae']:.2f}px (n={r['sgl_n']})")
+    if r['has_src']:
+        (mn, mm) = r['by_src'].get('model', (0, float('nan')))
+        (fn, fm) = r['by_src'].get('fallback', (0, float('nan')))
+        tot = mn + fn
+        cov = mn / tot * 100 if tot else 0.0
+        print(f"    模型覆盖={mn}/{tot} ({cov:.1f}%)  模型MAE={mm:.2f}px  fallbackMAE={fm:.2f}px (n={fn})")
+    else:
+        print("    [提示] pred 无 src 字段（旧版 infer 输出），无法区分模型/回退覆盖率")
 
 print("="*70)
 print("【MAE 对比】对齐规则: key=(round(t,3), line_id)；双押=orig 在该 t 音数>=2，单音===1")

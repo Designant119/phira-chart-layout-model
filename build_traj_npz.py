@@ -4,53 +4,28 @@
 输入特征 8 维（去掉 prev_x，推理无需真值）：
 dt, phase, density, pos, ty, durs, chord_x, level_norm
 标签 y = xnorm (x/675，clip ±1.2)，形状 (N,128)。
+特征构建与推理共用 traj_common（line_features/make_window），单处定义防口径漂移。
 用法：python3 build_traj_npz.py --out <dir> [--fids <json>]
 """
 import json, os, glob, argparse
 import numpy as np
 from collections import defaultdict
 
+from traj_common import (W, STRIDE, X_CLIP, LEVEL_DIV, FEAT_DIM, KEEP_TYPES,
+                         LEVEL_NORM_DEFAULT, chord_x_map, line_features, make_window,
+                         artifact_path)
+
 BASE = "/home/user/Doubao/chats/38445055719679234/phira_charts_dl"
-W, STRIDE = 128, 64
-X_SCALE, X_CLIP = 675.0, 1.2
-LEVEL_DIV = 25.0
-FEAT_DIM = 8
 
 
-def beat_at(t, segs):
-    n = len(segs)
-    if n == 0:
-        return 0.0
-    start_secs = [0.0] * n
-    for i in range(1, n):
-        b0, bpm0 = segs[i - 1]
-        b1 = segs[i][0]
-        start_secs[i] = start_secs[i - 1] + (b1 - b0) * 60.0 / bpm0
-    idx = n - 1
-    for i in range(n):
-        if start_secs[i] > t:
-            idx = i - 1
-            break
-    b_start, bpm = segs[idx]
-    return b_start + (t - start_secs[idx]) * bpm / 60.0
-
-
-def build_song(fid, notes, bpm, level_norm=0.0):
+def build_song(notes, bpm, level_norm=0.0):
     """返回窗口列表 [(X128x8, y128)]，y = xnorm。
-    只用 Tap(1)/Hold(2)，排除 Drag(3)/Flick(4)。"""
-    notes = [n for n in notes if int(n.get("type", 1)) in (1, 2)]
-    all_by_t = defaultdict(list)
-    for n in notes:
-        all_by_t[round(n["t"], 3)].append(n)
-    chord_x_of = {}
-    for t, ns in all_by_t.items():
-        xs = [n["x"] for n in ns]
-        if len(xs) >= 2:
-            m = float(np.mean(xs))
-            for n in ns:
-                chord_x_of[id(n)] = m
+    只用 Tap(1)/Hold(2)，排除 Drag(3)/Flick(4)；窗口为对齐全窗
+    （与历史 npz/ckpt 同口径，保证可比性；推理侧的尾窗全覆盖见 traj_common.window_starts）。"""
+    notes = [n for n in notes if int(n.get("type", 1)) in KEEP_TYPES]
+    cmap = chord_x_map(notes)
 
-    lines = {}
+    lines = defaultdict(list)
     for n in notes:
         lines.setdefault(n.get("line_id", 0), []).append(n)
 
@@ -59,44 +34,12 @@ def build_song(fid, notes, bpm, level_norm=0.0):
         if len(lnotes) < 4:
             continue
         lnotes = sorted(lnotes, key=lambda n: n["t"])
-        ts = np.array([n["t"] for n in lnotes], dtype=np.float64)
-        xs = np.array([n["x"] for n in lnotes], dtype=np.float32)
-        tys = np.array([n.get("type", 1) for n in lnotes], dtype=np.float32)
-        durs = np.array([min(n.get("dur", 0.0), 2.0) for n in lnotes], dtype=np.float32)
-
-        dt = np.zeros(len(lnotes), dtype=np.float32)
-        dt[1:] = np.clip(np.log1p(ts[1:] - ts[:-1]) / 3.0, 0, 1)
-
-        if bpm is not None:
-            beats = np.array([beat_at(float(t), bpm) for t in ts])
-            phase = ((np.floor(beats * 4.0).astype(np.int64) % 16) / 15.0).astype(np.float32)
-        else:
-            phase = np.zeros(len(lnotes), dtype=np.float32)
-
-        ty = (tys - 1.0) / 3.0
-        pos = np.arange(len(lnotes), dtype=np.float32) % W / float(W - 1)
-
-        xnorm = np.clip(xs / X_SCALE, -X_CLIP, X_CLIP).astype(np.float32)
-
-        chord_x = np.zeros(len(lnotes), dtype=np.float32)
-        for i, n in enumerate(lnotes):
-            m = chord_x_of.get(id(n))
-            if m is not None:
-                chord_x[i] = float(np.clip(m / X_SCALE, -X_CLIP, X_CLIP))
-
-        nw = max(0, (len(lnotes) - W) // STRIDE + 1)
-        for i in range(nw):
+        feat = line_features(lnotes, bpm, level_norm, cmap)
+        yline = feat["xnorm"]
+        for i in range(max(0, (len(lnotes) - W) // STRIDE + 1)):
             s = i * STRIDE
-            e = s + W
-            seg_t = ts[s:e]
-            span = seg_t[-1] - seg_t[0]
-            density = np.clip(float(W) / max(span, 1e-6) / 20.0, 0, 1)
-            X = np.stack([
-                dt[s:e], phase[s:e], np.full(W, density, dtype=np.float32),
-                pos[s:e], ty[s:e], durs[s:e], chord_x[s:e],
-                np.full(W, level_norm, dtype=np.float32),
-            ], axis=1)
-            windows.append((X.astype(np.float32), xnorm[s:e].astype(np.float32)))
+            X, _ = make_window(feat, s, s + W)
+            windows.append((X, yline[s:s + W].astype(np.float32)))
     return windows
 
 
@@ -121,6 +64,7 @@ def main():
                     help="空白增强概率：train 窗口以该概率追加 y-=y[0] 的平移副本（val/test 不动）")
     args = ap.parse_args()
 
+    outdir = artifact_path(args.out)
     roots = [r.strip() for r in args.roots.split(",") if r.strip()]
     if args.fids:
         if args.fids.endswith(".json"):
@@ -151,8 +95,12 @@ def main():
             stats["no_bpm"] += 1
             continue
         bpm = json.load(open(bpm_p))["segs"]
+        parsed_p = find_fid_file(fid, roots, "parsed")
+        if parsed_p is None:
+            stats["empty"] += 1
+            continue
         try:
-            d = json.load(open(find_fid_file(fid, roots, "parsed")))
+            d = json.load(open(parsed_p))
         except Exception:
             stats["empty"] += 1
             continue
@@ -162,11 +110,11 @@ def main():
             continue
         lv = lvl_cache.get(fid)
         if lv is None:
-            level_norm = 0.0
+            level_norm = LEVEL_NORM_DEFAULT
             stats["no_level"] += 1
         else:
             level_norm = float(lv) / LEVEL_DIV
-        w = build_song(fid, notes, bpm, level_norm)
+        w = build_song(notes, bpm, level_norm)
         if not w:
             continue
         songs.append((fid, w))
@@ -201,8 +149,8 @@ def main():
         splits["train"] = aug_items
         print(f"空白增强: p={args.aug_blank} 追加 {n_aug} 个 train 窗口")
 
-    os.makedirs(args.out, exist_ok=True)
-    json.dump(fid_split, open(os.path.join(args.out, "split.json"), "w"), ensure_ascii=False, indent=1)
+    os.makedirs(outdir, exist_ok=True)
+    json.dump(fid_split, open(os.path.join(outdir, "split.json"), "w"), ensure_ascii=False, indent=1)
 
     for split, items in splits.items():
         total_w = sum(len(w) for _, w in items)
@@ -216,8 +164,8 @@ def main():
                 y[idx] = wy
                 idx += 1
             sid.extend([fid] * len(wins))
-        np.savez(os.path.join(args.out, f"{split}.npz"), X=X, y=y, song_ids=np.array(sid))
-        print(f"{split}: 歌{len(items)} 窗口{total_w} → {os.path.join(args.out, split)}.npz")
+        np.savez(os.path.join(outdir, f"{split}.npz"), X=X, y=y, song_ids=np.array(sid))
+        print(f"{split}: 歌{len(items)} 窗口{total_w} → {os.path.join(outdir, split)}.npz")
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import json, os, sys, argparse
 import numpy as np
 import torch
 from train_layout_v4 import GRUCls, BIN_CENTERS, NB, BIN_LO, BIN_HI
+from traj_common import enforce_chord_gaps  # 统一出处；本文件与 infer_chord/infer_traj 共用
 
 BASE = "/home/user/Doubao/chats/38445055719679234/phira_charts_dl"
 X_SCALE = 675.0
@@ -110,31 +111,6 @@ def infer_line(model, Xw, rng, bound=0.98, nb=None, temperature=1.0, greedy=Fals
         else:
             pred_norm[i] = cur + centers[rng.choice(nb, p=p)]
     return pred_norm * X_SCALE
-
-def enforce_chord_gaps(out_notes, min_gap=200.0, xlim=675.0):
-    """跨线同刻多音符：强制相邻间距 >= min_gap（贪心双向推）。"""
-    from collections import defaultdict
-    grp = defaultdict(list)
-    for n in out_notes:
-        grp[round(n['t'], 3)].append(n)
-    for t, ns in grp.items():
-        if len(ns) < 2:
-            continue
-        ns.sort(key=lambda n: n['x'])
-        xs = [n['x'] for n in ns]
-        # 从左到右推
-        for i in range(1, len(xs)):
-            if xs[i] - xs[i-1] < min_gap:
-                xs[i] = xs[i-1] + min_gap
-        if xs[-1] > xlim:
-            # 溢出：从右到左反向推
-            for i in range(len(xs)-2, -1, -1):
-                if xs[i+1] - xs[i] < min_gap:
-                    xs[i] = xs[i+1] - min_gap
-        for n, x in zip(ns, xs):
-            n['x'] = float(np.clip(x, -xlim, xlim))
-    return out_notes
-
 
 def main():
     ap = argparse.ArgumentParser()

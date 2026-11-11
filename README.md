@@ -11,9 +11,10 @@
 
 - 输入：128 音窗口 × 8 维特征（`dt, phase, density, pos, ty, durs, chord_x, level_norm`）
 - 结构：`TransformerEncoder(d_model=128, nhead=4, layers=3)`，一次前向并行输出 128 个 x
-- 损失：`MSE(谱师 x) + λ_smooth·相邻位移平滑 + λ_bound·边界惩罚`
-- 推理：滑窗（128 / stride 64）重叠平均，两遍推理（第一遍粗排 → 第二遍用同刻粗排 x 均值精排）
-- 音符类型：仅保留 Tap(1) / Hold(2)，排除 Drag(3) / Flick(4)
+- 损失：`MSE(谱师 x) + λ_smooth·相邻位移平滑 + λ_bound·边界惩罚`（选模/早停用 val 纯 MSE）
+- 推理：滑窗（128 / stride 64）重叠平均 + 尾窗补覆盖，两遍推理（第一遍粗排 → 第二遍用同刻粗排 x 均值精排）
+- 特征口径：训练与推理共用 `traj_common.py`（整线计算后切窗），音符类型仅 Tap(1)/Hold(2)
+- 推理输出每音符带 `"src": "model" | "fallback"`（fallback=线内 <4 音沿用原谱 x），评估据此统计模型真实覆盖率
 
 ### 历史路线（保留作对照）
 
@@ -36,15 +37,15 @@
 ## 环境依赖
 
 - Python 3.10+
-- `numpy`、`torch`（训练/推理）、`pyyaml`（解析 info.yml）、`Pillow`（出图）
+- `numpy`、`torch`（训练/推理）、`pyyaml`（解析 info.yml）、`Pillow`（出图）、`matplotlib`（viz 出图）
 
 ```bash
-pip install numpy torch pyyaml pillow
+pip install numpy torch pyyaml pillow matplotlib
 ```
 
 ## 快速开始
 
-1. **修改路径**：各脚本顶部的 `BASE` 常量改为你本地项目目录。
+1. **修改路径**：各脚本顶部的 `BASE` 常量改为你本地数据目录（`parsed/`、`bpm/`、`level_cache.json` 所在处）；产物路径（`--out`/`--data`/`--ckpt`）相对路径一律相对当前工作目录，绝对路径原样。
 2. **采集谱面**：运行 `phira_fetch.py` 拉取并解析谱面到 `parsed/` 与 `bpm/`。
 3. **构建数据集**：
 

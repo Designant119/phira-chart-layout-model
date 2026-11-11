@@ -10,7 +10,26 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
 BASE = "/home/user/Doubao/chats/38445055719679234/phira_charts_dl"
-FONT = font_manager.FontProperties(fname='/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc')
+# 常见中文字体候选（Linux wqy/Noto、macOS、Windows），找不到时回退系统默认
+_FONT_CANDIDATES = [
+    '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+    '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc',
+    '/System/Library/Fonts/PingFang.ttc',
+    'C:/Windows/Fonts/msyh.ttc',
+]
+
+
+def _load_font():
+    for p in _FONT_CANDIDATES:
+        if os.path.exists(p):
+            return font_manager.FontProperties(fname=p)
+    print(f"[warn] 未找到中文字体（{len(_FONT_CANDIDATES)} 个候选均缺失），回退系统默认")
+    return font_manager.FontProperties()
+
+
+FONT = _load_font()
 NOTE_W = 178.0  # 音符条宽 px（定稿样式）
 XMAX = 675.0
 

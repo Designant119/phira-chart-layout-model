@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""扫描全部 pez，提取 META.level -> level_cache.json {fid: level_float}。
+r"""扫描全部 pez，提取 META.level -> level_cache.json {fid: level_float}。
 pez: subsets/unstable_*/*.pez；文件名前缀即 fid（如 15710_Circle-rombed oxyg.pez）。
 zip 内含若干 .json，找含 META 键的那个，META.level 形如 'IN Lv.15'，正则 Lv\.?([\d.]+)。
 """
