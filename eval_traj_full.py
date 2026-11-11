@@ -11,9 +11,12 @@ def load_notes(path):
     return json.load(open(path))['notes']
 
 def mae_compare(fid, pred_file, orig_file):
-    """按 (round(t,3), line_id) 对齐 pred->orig，分组统计双押/单音 MAE。"""
-    orig = load_notes(orig_file)
-    pred = load_notes(pred_file)
+    """按 (round(t,3), line_id) 对齐 pred->orig，分组统计双押/单音 MAE。
+    双方先过滤只留 Tap(1)/Hold(2)（与 infer_traj 输出及 eval_traj_v2 新口径一致）：
+    Drag/Flick 留在 orig 里会把 Tap+Drag 时刻误计成双押（orig_tcount 虚高），
+    同线同刻混合类型时 pred 的 Tap 还可能配到 Drag/Flick 的 x 上，MAE 失真。"""
+    orig = [n for n in load_notes(orig_file) if int(n.get('type', 1)) in (1, 2)]
+    pred = [n for n in load_notes(pred_file) if int(n.get('type', 1)) in (1, 2)]
     # orig 按 (t3, line_id) 索引；同键可能多条，用 list
     orig_idx = defaultdict(list)
     for n in orig:
