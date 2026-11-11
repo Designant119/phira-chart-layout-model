@@ -1,0 +1,66 @@
+# ===== 数据（不入库）=====
+parsed/
+bpm/
+phira_full/
+subsets/
+manifest/
+parsed_bak_oldlinear/
+parsed_bak_merged/
+train_data/
+train_data_v2/
+train_data_v3/
+train_data_v4_low/
+train_data_ft_chord/
+train_data_ft6th/
+train_data_ft6th9/
+train_data_chord_full/
+train_data_chord9_full/
+train_data_traj_full/
+train_data_traj_v2/
+train_data_traj_blank/
+train_data_ft_traj/
+train_data_traj_ft/
+
+# ===== 模型权重（不入库）=====
+layout_ckpt*/
+ckpt_*/
+
+# ===== 产物 / 临时 =====
+*.npz
+*.png
+*.log
+*.zip
+infer_*.json
+viz_grid3/
+logs/
+state/
+artifacts/
+monitor/
+failures/
+__pycache__/
+COMPLETE.json*
+remote_list*.json
+manifest.json
+verify_3200_official.json
+verify_32425_official.json
+orig_val_sample.npz
+train_data_mixA.npz
+
+# ===== 早期飞书云盘管线（含内部 folder token，不入库）=====
+bulk_dl.py
+pipeline.py
+pipeline_0003.py
+pipeline_0004.py
+pipeline_subset.py
+pipeline_unstable_0005.py
+run_pipeline.py
+run_reparse_all.sh
+monitor.sh
+supervise.sh
+supervise_layout.sh
+
+# 早期可视化 html 产物 / 清单数据
+*.html
+charter_fids.json
+viz_embed.json
+MONITOR_DONE.txt
