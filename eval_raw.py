@@ -40,7 +40,8 @@ def infer_v5_low_raw(fid):
                             "line_id": lid, "dur": n.get("dur", 0.0)})
             continue
         Xw = build_features(lnotes, bpm)
-        pred = infer_line(model, Xw, rng)
+        ts = np.array([n["t"] for n in lnotes], dtype=np.float64)
+        pred = infer_line(model, Xw, ts, rng)
         for j, n in enumerate(lnotes):
             out.append({"t": n["t"], "type": n.get("type", 1), "x": float(pred[j]),
                         "line_id": lid, "dur": n.get("dur", 0.0)})

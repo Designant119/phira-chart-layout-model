@@ -73,12 +73,19 @@ def build_features(lnotes, bpm):
     return X.astype(np.float32)
 
 
-def infer_line(model, Xw, rng, bound=0.98, nb=None, temperature=1.0, greedy=False):
-    """一条线特征 (N,7) -> 预测 x 序列（真自回归：逐音符前向 + prev_x 实时更新）。
+def infer_line(model, Xw, ts, rng, bound=0.98, nb=None, temperature=1.0, greedy=False):
+    """一条线特征 (N,7)、对应时间 ts -> 预测 x 序列（真自回归：逐音符前向 + prev_x 实时更新）。
     修复：旧版整窗口一次前向，窗口内 prev_x 特征全是初始值，模型误以为
     "前一个音符在 0 位置"，导致采样偏向小位移 → 输出大量纵连。
     现在每预测一个音符就把它作为下一个的 prev_x 特征，模型真正"看着前面排"。
-    temperature<1：softmax 采样锐化（趋近 argmax），抑制随机掷骰子导致的轨迹抖动。"""
+    temperature<1：softmax 采样锐化（趋近 argmax），抑制随机掷骰子导致的轨迹抖动。
+    口径修复（对齐训练构建 build_train_npz_v3/build_chord_npz：特征整线算后切片、
+    density 每窗独立）：
+    - pos 不再按窗口重算：旧版 arange(len(seg))%W/(W-1) 使第 W 音起 pos 恒为窗尾
+      1.0，丢掉线内位置信号；训练是整线 arange(N)%W 后切片，build_features 第3列
+      已是该值，切片即训练口径；
+    - density 每窗重算：旧版整条线共用 N/线span/20，训练是每窗 W/窗span/20，
+      现按当前窗口 len(seg)/窗span/20（与 traj_common.make_window 同式）。"""
     nb = nb or getattr(model, "nb", NB)
     _, centers = make_bins(nb)
     N = Xw.shape[0]
@@ -91,8 +98,14 @@ def infer_line(model, Xw, rng, bound=0.98, nb=None, temperature=1.0, greedy=Fals
         for k in range(s, i + 1):
             if k > 0:
                 seg[k - s, 6] = pred_norm[k - 1]
-        # 窗口内位置特征（第3列）按当前窗口重算（训练时 %W/(W-1)）
-        seg[:, 3] = (np.arange(len(seg)) % W) / float(W - 1)
+        # density 按当前窗口重算；pos（第3列）直接用 build_features 整线值切片，勿按窗口重算。
+        # density 分子用 len(seg) 而非 W：训练窗口恒长 W（build_train_npz_v3 只切 e=s+W 的
+        # 对齐整窗），len(seg)==W 时与训练公式 W/span/20 逐值相等；推理满窗（i>=W-1）即此情形。
+        # 短窗（线首 i<W-1、或 N<W 的线）训练中不存在对应样本，若用 W 会把 density 虚高至
+        # 数十倍（L=4 时 32 倍），len(seg) 保持"窗口内音符/秒"语义，且与主线
+        # traj_common.make_window（vlen/span/20）同式。
+        span = max(float(ts[i] - ts[s]), 1e-6)
+        seg[:, 2] = np.clip(len(seg) / span / 20.0, 0, 1)
         Xt = torch.from_numpy(seg.astype(np.float32)).unsqueeze(0)
         with torch.no_grad():
             logits = model(Xt)[0]
@@ -141,7 +154,8 @@ def main():
                 out_notes.append({"t": n["t"], "type": n.get("type", 1), "x": n["x"], "line_id": lid, "dur": n.get("dur", 0.0)})
             continue
         Xw = build_features(lnotes, bpm)
-        pred = infer_line(model, Xw, rng)
+        ts = np.array([n["t"] for n in lnotes], dtype=np.float64)
+        pred = infer_line(model, Xw, ts, rng)
         for j, n in enumerate(lnotes):
             out_notes.append({"t": n["t"], "type": n.get("type", 1),
                               "x": float(pred[j]), "line_id": lid, "dur": n.get("dur", 0.0)})

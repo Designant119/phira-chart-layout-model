@@ -75,7 +75,8 @@ def infer_song(fid, model, seed, two_pass=True, nb=None, temperature=1.0, greedy
                                 "line_id": lid, "dur": n.get("dur", 0.0)})
                 continue
             Xw = build_features_chord(lnotes, bpm, chord_map, level_norm)
-            pred = infer_line(model, Xw, np.random.RandomState(seed), nb=nb, temperature=temperature, greedy=greedy)
+            ts = np.array([n["t"] for n in lnotes], dtype=np.float64)
+            pred = infer_line(model, Xw, ts, np.random.RandomState(seed), nb=nb, temperature=temperature, greedy=greedy)
             for j, n in enumerate(lnotes):
                 out.append({"t": n["t"], "type": n.get("type", 1), "x": float(pred[j]),
                             "line_id": lid, "dur": n.get("dur", 0.0)})
