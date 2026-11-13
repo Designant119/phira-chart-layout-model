@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Transformer 轨迹回归训练：输入 (N,128,feat) → 输出 128 个 x（确定性，非采样）。
+特征默认 9 维（末位 prev_x），配合 --causal 1 的因果注意力 + prev_x 噪声注入；
+--feat 8 --causal 0 可复现旧的 8 维双向基线（不加因果时 prev_x 会泄漏标签，勿混用）。
 损失 = MSE(谱师x) + λ_smooth·平滑(相邻|Δx|超阈值惩罚) + λ_bound·边界(越界惩罚)。
 选模/早停用 val 纯 MSE（正则项只参与训练，不参与模型选择）。
 --data/--ckpt/--init-from 相对路径相对 cwd（绝对原样），与 build_traj_npz --out 口径一致。
-用法：python3 train_traj.py --data <dir> --ckpt <out> [--epochs 40] [--lr 3e-4] [--feat 8] [--resume]
+用法：python3 train_traj.py --data <dir> --ckpt <out> [--epochs 40] [--lr 3e-4] [--feat 9] [--resume]
 """
 import json, os, time, argparse
 import numpy as np
@@ -29,11 +31,19 @@ class TrajTransformer(nn.Module):
         self.enc = nn.TransformerEncoder(enc, num_layers=layers)
         self.head = nn.Linear(d_model, 1)
 
-    def forward(self, x, padding_mask=None):
+    def forward(self, x, padding_mask=None, causal=False):
         """padding_mask: (N,S) bool，True=padding 位（推理补零窗口用；训练全窗不传）。
+        causal=True 时叠加因果 mask（位置 i 只能看到 <=i），配合 prev_x 特征；
+        不加因果会让位置 i 从邻居特征里直接读到自己标签（prev_x 泄漏），loss 假降。
         不改变 state_dict 结构，兼容旧 ckpt。"""
         h = self.proj(x) + self.pos
-        h = self.enc(h, src_key_padding_mask=padding_mask)
+        attn_mask = None
+        if causal:
+            S = x.shape[1]
+            attn_mask = torch.triu(torch.ones(S, S, dtype=torch.bool, device=x.device), diagonal=1)
+            if padding_mask is not None:
+                attn_mask = attn_mask.unsqueeze(0) | padding_mask.unsqueeze(1)  # (N,S,S)
+        h = self.enc(h, mask=attn_mask, src_key_padding_mask=padding_mask)
         return self.head(h).squeeze(-1)  # (N,128)
 
 
@@ -48,7 +58,11 @@ def train():
     ap.add_argument("--ckpt", type=str, required=True)
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--feat", type=int, default=8)
+    ap.add_argument("--feat", type=int, default=9)
+    ap.add_argument("--causal", type=int, default=1,
+                    help="1=因果注意力（有 prev_x 时必须，否则标签泄漏）；0=旧双向口径")
+    ap.add_argument("--prev-noise", type=float, default=0.25,
+                    help="训练时对 prev_x 注入的噪声上限 σ（线性 ramp；0=关闭，模拟推理误差累积）")
     ap.add_argument("--lam_smooth", type=float, default=0.5)
     ap.add_argument("--lam_bound", type=float, default=LAM_BOUND)
     ap.add_argument("--patience", type=int, default=8)
@@ -104,8 +118,10 @@ def train():
             print("[resume] 旧 state 指标口径为总损失，稍后以当前权重重测 val MSE 为基线", flush=True)
         print(f"[resume] ep{start_ep} best={best_val:.5f}@{best_ep}", flush=True)
 
-    def run(X, y, grad):
-        """返回 (avg_total, avg_mse)。avg_mse 纯 MSE 用于选模；total 含正则仅参考打印。"""
+    def run(X, y, grad, prev_noise=0.0):
+        """返回 (avg_total, avg_mse)。avg_mse 纯 MSE 用于选模；total 含正则仅参考打印。
+        prev_noise>0 时对 prev_x 列加高斯噪声（仅在训练），让模型见过"推理自己走歪"的输入，
+        降低 teacher-forcing 与自回归解码之间的 exposure bias。"""
         model.train(grad)
         n = X.shape[0]
         idx = np.random.permutation(n) if grad else np.arange(n)
@@ -114,9 +130,12 @@ def train():
         for i in range(0, n, args.batch):
             ids = idx[i:i + args.batch]
             xb, yb = X[ids], y[ids]
+            if grad and prev_noise > 0 and xb.shape[2] > 8:
+                xb = xb.clone()
+                xb[:, :, 8] = (xb[:, :, 8] + torch.randn_like(xb[:, :, 8]) * prev_noise).clamp(-1.2, 1.2)
             if grad:
                 opt.zero_grad()
-            pred = model(xb)
+            pred = model(xb, causal=bool(args.causal))
             loss = mse(pred, yb)
             # 平滑：相邻音符位移惩罚（越界大跳惩罚，允许谱师级 300px 内）
             dx = (pred[:, 1:] - pred[:, :-1]).abs()
@@ -142,7 +161,9 @@ def train():
         best_ep = start_ep
         print(f"[resume] 基线重测: 当前权重 val_mse={best_val:.5f}", flush=True)
     for ep in range(start_ep, args.epochs):
-        trl, trm = run(Xtr, ytr, True)
+        # prev_x 噪声 ramp：前 10 轮从 0 升到上限，之后恒定（模拟部署时的累积误差量级）
+        noise = args.prev_noise * min(1.0, (ep - start_ep + 1) / 10.0) if args.causal else 0.0
+        trl, trm = run(Xtr, ytr, True, noise)
         vt, vm = run(Xva, yva, False)
         tag = ''
         if vm < best_val:
@@ -154,6 +175,7 @@ def train():
             wait += 1
         json.dump({'epoch': ep + 1, 'best_val': best_val, 'best_epoch': best_ep, 'wait': wait,
                    'lr': args.lr, 'feat': args.feat, 'metric': 'val_mse',
+                   'causal': args.causal, 'prev_noise': args.prev_noise,
                    'lam_smooth': args.lam_smooth, 'lam_bound': args.lam_bound},
                   open(os.path.join(ckdir, 'ckpt_state.json'), 'w'))
         print(f"[ep {ep+1}/{args.epochs}] train {trl:.4f}(mse {trm:.4f}) "

@@ -13,7 +13,8 @@ import numpy as np
 W, STRIDE = 128, 64
 X_SCALE, X_CLIP = 675.0, 1.2
 LEVEL_DIV = 25.0
-FEAT_DIM = 8
+FEAT_DIM = 9                  # 8 维 + prev_x（自回归推理用；旧 8 维 ckpt 仍可推理，显式传 feat_dim=8）
+PREV_X_COL = 8                # prev_x 特征列下标（feat_dim>=9 时有效）
 KEEP_TYPES = (1, 2)          # 只排 Tap/Hold
 LEVEL_NORM_DEFAULT = 0.0     # 缺难度兜底：训练=推理统一（改这里必须重建 npz 并重训）
 
@@ -86,10 +87,17 @@ def line_features(lnotes, bpm, level_norm, chord_map=None):
                 chord_x[i] = m
 
     xs = np.array([nt["x"] for nt in lnotes], dtype=np.float32)
+    xnorm = np.clip(xs / X_SCALE, -X_CLIP, X_CLIP).astype(np.float32)
+    # prev_x：整线上一音符的 x（线首补 0）。必须按整线算完再切窗，
+    # 不能按窗内 shift（否则每个窗口首音都成了伪线首，训练/推理口径不一致）。
+    prev_x = np.zeros(N, dtype=np.float32)
+    if N > 1:
+        prev_x[1:] = xnorm[:-1]
     return {
         "ts": ts, "dt": dt, "phase": phase, "pos": pos, "ty": ty,
         "durs": durs, "chord_x": chord_x, "level": np.float32(level_norm),
-        "xnorm": np.clip(xs / X_SCALE, -X_CLIP, X_CLIP).astype(np.float32),
+        "prev_x": prev_x,
+        "xnorm": xnorm,
     }
 
 
@@ -107,23 +115,28 @@ def window_starts(n, w=W, stride=STRIDE):
     return [(s, min(s + w, n)) for s in starts]
 
 
-def make_window(feat, s, e, w=W):
-    """整线特征切 [s, e) 窗口 -> (X (w,FEAT_DIM) 不足补零, vlen)。
+def make_window(feat, s, e, w=W, feat_dim=None):
+    """整线特征切 [s, e) 窗口 -> (X (w,feat_dim) 不足补零, vlen)。
     要求 e-s <= w（window_starts 保证）；density = vlen/span/20，
-    全窗 vlen==W 时与训练公式 W/span/20 完全一致。"""
+    全窗 vlen==W 时与训练公式 W/span/20 完全一致。
+    feat_dim=8 用于兼容旧 ckpt（不拼 prev_x 列）；默认走 FEAT_DIM。"""
+    fd = FEAT_DIM if feat_dim is None else int(feat_dim)
     vlen = e - s
     assert 0 < vlen <= w, f"窗口长度 {vlen} 越界，须在 (0, {w}]（检查 window_starts 调用）"
     span = max(float(feat["ts"][e - 1] - feat["ts"][s]), 1e-6)
     density = np.clip(float(vlen) / span / 20.0, 0, 1)
-    seg = np.stack([
+    cols = [
         feat["dt"][s:e], feat["phase"][s:e],
         np.full(vlen, density, dtype=np.float32),
         feat["pos"][s:e], feat["ty"][s:e], feat["durs"][s:e],
         feat["chord_x"][s:e],
         np.full(vlen, feat["level"], dtype=np.float32),
-    ], axis=1).astype(np.float32)
+    ]
+    if fd >= 9:
+        cols.append(feat["prev_x"][s:e])
+    seg = np.stack(cols, axis=1).astype(np.float32)
     if vlen < w:
-        seg = np.concatenate([seg, np.zeros((w - vlen, FEAT_DIM), dtype=np.float32)], axis=0)
+        seg = np.concatenate([seg, np.zeros((w - vlen, fd), dtype=np.float32)], axis=0)
     return seg, vlen
 
 

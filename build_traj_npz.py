@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """轨迹回归数据构建：标签 = 窗口内音符 x（直接回归），不再是 dx 位移。
-输入特征 8 维（去掉 prev_x，推理无需真值）：
-dt, phase, density, pos, ty, durs, chord_x, level_norm
-标签 y = xnorm (x/675，clip ±1.2)，形状 (N,128)。
+输入特征 9 维：dt, phase, density, pos, ty, durs, chord_x, level_norm, prev_x（整线 shift）。
+prev_x 让模型有条件化轨迹（配合 train_traj 的因果 mask 与 infer_traj 的逐音自回归）；
+旧 8 维 npz/ckpt 仍可用 feat_dim=8 加载。标签 y = xnorm (x/675，clip ±1.2)，形状 (N,128)。
 特征构建与推理共用 traj_common（line_features/make_window），单处定义防口径漂移。
 用法：python3 build_traj_npz.py --out <dir> [--fids <json>]
 """
@@ -146,6 +146,12 @@ def main():
                     # 否则 0-wy[0] 会凭空造出幻影和弦位置，污染增强窗口
                     nz = wx2[:, 6] != 0
                     wx2[nz, 6] = np.clip(wx2[nz, 6] - wy[0], -X_CLIP, X_CLIP).astype(np.float32)
+                    # prev_x 也是绝对位置特征，必须与 y 同步平移：
+                    # 窗口第 0 位的 prev_x 是"线首哨兵 0"或"窗前一个真实音符"，
+                    # 无法从值本身区分，故保持原位不动（最多差一个音符），
+                    # 其余位置（j>=1）必然等于窗内 y[j-1]，无条件平移
+                    if wx2.shape[1] > 8:
+                        wx2[1:, 8] = np.clip(wx2[1:, 8] - wy[0], -X_CLIP, X_CLIP).astype(np.float32)
                     new_wins.append((wx2, wy2))
                     n_aug += 1
             aug_items.append((fid, new_wins))
