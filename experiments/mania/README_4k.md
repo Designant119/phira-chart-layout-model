@@ -22,6 +22,17 @@ python3 finetune_4k_ss.py --epochs 5   # -> ckpt_mania4k_full_ss.pt
 - 4K 左手列 0/1，右手列 2/3；
 - 生成列映射到 Phira x = `-495 / -165 / 165 / 495`。
 
+## 推理
+
+```bash
+cd experiments/mania
+python3 gen_mania.py --osu /path/to/chart.osu \
+  --ckpt weights/ckpt_mania4k_full_honest.pt --out gen.json
+```
+
+输出 `gen.json` 是逐音 lane（0–3）+ 类型/时长，不是可直接渲染的 Phira 谱面；
+要出片还得按 `-495/-165/165/495` 映射成 Phira 的 x 再套模板。
+
 ## 权重
 
 | 文件 | 说明 | val / test |
@@ -31,6 +42,10 @@ python3 finetune_4k_ss.py --epochs 5   # -> ckpt_mania4k_full_ss.pt
 | `weights/ckpt_mania4k_legacy.pt` | 早期 165 张 4K，旧 streak 口径，仅作对照 | 67.35% / 67.33% |
 | `weights/mlp_4k.pth` | MLP 基线，旧口径 | 66.25% / 66.42% |
 | `weights/ckpt_4k_early.pth` | 早期 4K Transformer 基线 | val 59.77% |
+
+**兼容性**：`ckpt_mania4k_full_honest.pt` 和 `ckpt_mania4k_full_ss.pt` 是当前诚实 streak 口径，
+可直接配 `gen_mania.py`；`ckpt_mania4k_legacy.pt`、`mlp_4k.pth`、`ckpt_4k_early.pth` 是旧口径，
+只能当历史对照，别混进现在的生成器。
 
 多数类基线约 25.5%。测试谱 `5960548` 的 80–120s 段生成 AR：诚实版权重约 35.6%，
 旧权重约 40%，但旧权重训练特征有泄漏，数字不可直接比。
