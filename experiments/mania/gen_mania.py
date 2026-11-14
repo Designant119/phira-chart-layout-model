@@ -70,7 +70,18 @@ def make_vec(i, st, prev1, prev2, streak, lastL, lastR, win):
     win[i, 16] = lastL / 3.0; win[i, 17] = lastR / 3.0
 
 
-def gen(osu, ckpt, out_path):
+def load_trans(path):
+    d = np.load(path)
+    cnt = np.ones((4, 4), np.float64)
+    for sp in ("train",):
+        y = d[f"{sp}_y"]; ids = d[f"{sp}_ids"]; X = d[f"{sp}_X"]
+        for i in range(1, len(y)):
+            if ids[i] == ids[i - 1] and X[i, 0] > 0:
+                cnt[y[i - 1], y[i]] += 1
+    return cnt / cnt.sum(0, keepdims=True)
+
+
+def gen(osu, ckpt, out_path, beta=0.0, trans=None, jack_bonus=0.0):
     keys, notes = parse(osu)
     if keys != 4:
         raise SystemExit(f"只支持 4K，当前 CircleSize={keys}")
@@ -79,6 +90,7 @@ def gen(osu, ckpt, out_path):
     ck = torch.load(ckpt, map_location="cpu", weights_only=False)
     model = Net(18, 4)
     model.load_state_dict(ck["model"]); model.eval()
+    P = load_trans(trans) if (beta and trans) else None
 
     buf = np.zeros((n, 18), np.float32)
     pred = np.zeros(n, np.int64); prev1 = prev2 = -1; streak = 0; lastL = lastR = -1
@@ -91,18 +103,29 @@ def gen(osu, ckpt, out_path):
         for k in range(i, j + 1):
             make_vec(k, st, prev1, prev2, streak, lastL, lastR, buf)
             s = max(0, k - W + 1)
+            L = k - s + 1
             win = np.zeros((W, 18), np.float32)
-            win[-min(W, k - s + 1):] = buf[s:k + 1]
+            win[:L] = buf[s:k + 1]
             with torch.no_grad():
-                logits.append(model(torch.from_numpy(win[None]))[0, min(W, k - s + 1) - 1].numpy())
+                logits.append(model(torch.from_numpy(win[None]))[0, L - 1].numpy())
         used = set()
         for k in range(i, j + 1):
             sc = logits[k - i].copy()
+            if P is not None and prev1 >= 0:
+                sc += beta * np.log(P[:, prev1] + 1e-6)
+            if prev1 >= 0:
+                sc[prev1] += jack_bonus
             for u in used:
                 sc[u] = -1e9
             c = int(sc.argmax()); used.add(c); pred[k] = c
+            p1 = prev1
+            if p1 < 0:
+                streak = 1
+            elif c == p1:
+                streak += 1
+            else:
+                streak = 1
             prev2 = prev1; prev1 = c
-            streak = streak + 1 if k and c == pred[k - 1] else 0
             if c < 2:
                 lastL = c
             else:
@@ -122,5 +145,8 @@ if __name__ == "__main__":
     ap.add_argument("--osu", required=True)
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--beta", type=float, default=0.0, help="换列先验权重；0=不启用")
+    ap.add_argument("--trans", type=str, default=None, help="mania npz，用于估计 4x4 换列先验")
+    ap.add_argument("--jack-bonus", type=float, default=0.0, help="同列 jack 的 logit 加成")
     a = ap.parse_args()
-    gen(a.osu, a.ckpt, a.out)
+    gen(a.osu, a.ckpt, a.out, a.beta, a.trans, a.jack_bonus)

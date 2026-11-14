@@ -62,9 +62,11 @@ def feats(notes, keys):
         dens[i] = min((j1 - j0 + 1) / 20.0, 1.0)
     prev = np.full(n, -1); prev2 = np.full(n, -1)
     prev[1:] = col[:-1]; prev2[2:] = col[:-2]
-    streak = np.zeros(n)
-    for i in range(1, n):
-        streak[i] = streak[i - 1] + 1 if col[i] == col[i - 1] else 0
+    # 只给“进入当前音之前”的连打长度，不能用当前列号（否则标签泄漏）
+    streak = np.zeros(n); run = 0
+    for i in range(n):
+        streak[i] = run
+        run = run + 1 if (i > 0 and col[i] == col[i - 1]) else 1
     # 手位：4K 左 0/1，右 2/3；7K 左 0-2，右 4-6
     if keys == 4:
         side = np.where(col < 2, 0, 1)
