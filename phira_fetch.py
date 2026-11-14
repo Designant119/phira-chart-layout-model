@@ -30,10 +30,13 @@ def http_get(url, retries=3, timeout=60, proxy="http://127.0.0.1:8118"):
         time.sleep(1.5 * (i + 1))
 
 
-def rpe_time_to_beat(t, grid_den):
-    """RPE time [bar, beat, grid] → 拍。grid 分母由数据推断（4 或 192）。"""
-    bar, beat, grid = t[0], t[1], t[2]
-    return bar * 4 + beat + grid / float(grid_den)
+def rpe_time_to_beat(t, grid_den=None):
+    """RPE time [beat, num, den] → 拍。第一段本身就是拍，不能再乘 4。
+    旧版把第一段当小节算成 bar*4，导致全谱 t 放大 4 倍；第三段是分母，不是格号。"""
+    if len(t) < 2:
+        return float(t[0])
+    den = float(t[2]) if len(t) > 2 and t[2] else 1.0
+    return float(t[0]) + float(t[1]) / den
 
 
 def parse_chart(chart_json):
@@ -55,7 +58,7 @@ def parse_chart(chart_json):
     grid_den = 192 if mx >= 16 else (16 if mx >= 8 else 4)
     segs = []
     for b in bpm_raw:
-        beat = rpe_time_to_beat(b["startTime"], grid_den)
+        beat = rpe_time_to_beat(b["startTime"])
         segs.append([beat, float(b["bpm"])])
     segs = sorted(segs, key=lambda s: s[0])
 
@@ -80,11 +83,11 @@ def parse_chart(chart_json):
             if n.get("isFake", 0) == 1:
                 continue
             typ = int(n.get("type", 1))
-            t_beat = rpe_time_to_beat(n["startTime"], grid_den)
+            t_beat = rpe_time_to_beat(n["startTime"])
             t = beat_to_sec(t_beat)
             dur = 0.0
             if typ == 2 and "endTime" in n and isinstance(n["endTime"], list):
-                e_beat = rpe_time_to_beat(n["endTime"], grid_den)
+                e_beat = rpe_time_to_beat(n["endTime"])
                 dur = max(0.0, beat_to_sec(e_beat) - t)
             notes.append({"t": round(t, 6), "x": float(n.get("positionX", 0.0)),
                           "type": typ, "dur": round(dur, 6), "line_id": li})
