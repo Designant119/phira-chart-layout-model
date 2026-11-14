@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 from traj_common import (W, X_SCALE, X_CLIP, KEEP_TYPES, LEVEL_DIV, LEVEL_NORM_DEFAULT,
-                         FEAT_DIM, PREV_X_COL, line_features, window_starts, make_window,
+                         FEAT_DIM, FEATURE_ORDERS, line_features, window_starts, make_window,
                          enforce_chord_gaps, artifact_path)
 from train_traj import TrajTransformer
 
@@ -38,11 +38,15 @@ def get_level_norm(fid):
     return LEVEL_NORM_DEFAULT
 
 
-def infer_notes(fid, model, chord_map, level_norm, feat_dim=None):
+def infer_notes(fid, model, chord_map, level_norm, feat_dim=None, feature_set=None, target="x"):
     """一遍推理。chord_map: {t3: xnorm}（第一遍={}，第二遍=第一遍预测的同刻均值）。
     feat_dim>=9（带 prev_x）：逐音自回归，每个音只被预测一次，窗口末尾位取输出；
     feat_dim==8（旧 ckpt）：走旧的重叠窗口平均路径。"""
-    fd = FEAT_DIM if feat_dim is None else int(feat_dim)
+    if feature_set is None:
+        feature_set = "base9" if (feat_dim is None or int(feat_dim) >= 9) else "legacy8"
+    order = FEATURE_ORDERS[feature_set]
+    fd = len(order)
+    prev_col = order.index("prev_x") if "prev_x" in order else -1
     d = json.load(open(os.path.join(BASE, "parsed", f"{fid}.json")))
     bpm_p = os.path.join(BASE, "bpm", f"{fid}.json")
     bpm = json.load(open(bpm_p))["segs"] if os.path.exists(bpm_p) else None
@@ -70,26 +74,30 @@ def infer_notes(fid, model, chord_map, level_norm, feat_dim=None):
                 continue
             feat = line_features(lnotes, bpm, level_norm, chord_map)
 
-            if fd >= 9:
+            if prev_col >= 0:
                 # --- 自回归：第 i 音用窗口 [i-127, i]，prev_x 填已预测值 ---
                 n = len(lnotes)
                 preds_norm = np.zeros(n, dtype=np.float32)  # 归一化 ((-1.2,1.2))，与训练 prev_x 同口径
                 causal = True
                 for i in range(n):
                     s = max(0, i - W + 1)
-                    X, vlen = make_window(feat, s, i + 1, feat_dim=fd)
+                    X, vlen = make_window(feat, s, i + 1, feat_dim=fd, feature_set=feature_set)
                     prev = np.zeros(vlen, dtype=np.float32)
                     for j in range(s, i + 1):
                         if j > 0:
                             prev[j - s] = preds_norm[j - 1]
-                    X[:vlen, PREV_X_COL] = prev
+                    X[:vlen, prev_col] = prev
                     Xt = torch.from_numpy(X).unsqueeze(0)
                     pad_mask = None
                     if vlen < W:
                         pad_mask = torch.zeros(1, W, dtype=torch.bool)
                         pad_mask[0, vlen:] = True
                     y = model(Xt, padding_mask=pad_mask, causal=causal)[0, vlen - 1].item()
-                    preds_norm[i] = float(np.clip(y, -X_CLIP, X_CLIP))
+                    if target == "delta":
+                        base = preds_norm[i - 1] if i > 0 else 0.0
+                        preds_norm[i] = float(np.clip(base + y, -X_CLIP, X_CLIP))
+                    else:
+                        preds_norm[i] = float(np.clip(y, -X_CLIP, X_CLIP))
                 for i, nt in enumerate(lnotes):
                     emit(nt, preds_norm[i] * X_SCALE, "model")
                 continue
@@ -97,7 +105,7 @@ def infer_notes(fid, model, chord_map, level_norm, feat_dim=None):
             # --- 旧路径（feat_dim==8，双向模型 + 重叠窗口平均）---
             pred = {}
             for s, e in window_starts(len(lnotes)):
-                X, vlen = make_window(feat, s, e, feat_dim=fd)
+                X, vlen = make_window(feat, s, e, feat_dim=fd, feature_set=feature_set)
                 Xt = torch.from_numpy(X).unsqueeze(0)
                 pad_mask = None
                 if vlen < W:  # 补零位屏蔽注意力（训练全窗无 padding，不能让模型看假音符）
@@ -135,10 +143,16 @@ def main():
     model = TrajTransformer(feat=feat)
     model.load_state_dict(ck["model"])
     model.eval()
+    st_p = os.path.join(ckpt_dir, "ckpt_state.json")
+    fset, target = ("base9" if feat >= 9 else "legacy8"), "x"
+    if os.path.exists(st_p):
+        st = json.load(open(st_p))
+        fset = st.get("feature_set") or fset
+        target = st.get("target", "x")
     lvl = get_level_norm(args.fid)
 
     # 第一遍：chord_x=0
-    pass1 = infer_notes(args.fid, model, {}, lvl, feat_dim=feat)
+    pass1 = infer_notes(args.fid, model, {}, lvl, feat_dim=feat, feature_set=fset, target=target)
     if args.pass1:
         notes = pass1
     else:
@@ -148,7 +162,7 @@ def main():
             by_t[round(n["t"], 3)].append(n["x"])
         chord_map = {t: float(np.clip(np.mean(xs) / X_SCALE, -X_CLIP, X_CLIP))
                      for t, xs in by_t.items() if len(xs) >= 2}
-        notes = infer_notes(args.fid, model, chord_map, lvl, feat_dim=feat)
+        notes = infer_notes(args.fid, model, chord_map, lvl, feat_dim=feat, feature_set=fset, target=target)
     notes = enforce_chord_gaps(notes)
     n_fb = sum(1 for n in notes if n.get("src") == "fallback")
     result = {"fid": args.fid, "mode": "traj", "ckpt": args.ckpt,

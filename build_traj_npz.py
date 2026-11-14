@@ -11,15 +11,15 @@ import json, os, glob, argparse
 import numpy as np
 from collections import defaultdict
 
-from traj_common import (W, STRIDE, X_CLIP, LEVEL_DIV, FEAT_DIM, KEEP_TYPES,
+from traj_common import (W, STRIDE, X_CLIP, LEVEL_DIV, FEAT_DIM, FEATURE_ORDERS, KEEP_TYPES,
                          LEVEL_NORM_DEFAULT, chord_x_map, line_features, make_window,
                          artifact_path)
 
 BASE = "/home/user/Doubao/chats/38445055719679234/phira_charts_dl"
 
 
-def build_song(notes, bpm, level_norm=0.0):
-    """返回窗口列表 [(X128x8, y128)]，y = xnorm。
+def build_song(notes, bpm, level_norm=0.0, feature_set="base9", target="x"):
+    """返回窗口列表 [(X128x8, y128)]；target=x 时 y=xnorm，target=delta 时 y=xnorm-prev_x。
     只用 Tap(1)/Hold(2)，排除 Drag(3)/Flick(4)；窗口为对齐全窗
     （与历史 npz/ckpt 同口径，保证可比性；推理侧的尾窗全覆盖见 traj_common.window_starts）。"""
     notes = [n for n in notes if int(n.get("type", 1)) in KEEP_TYPES]
@@ -35,10 +35,10 @@ def build_song(notes, bpm, level_norm=0.0):
             continue
         lnotes = sorted(lnotes, key=lambda n: n["t"])
         feat = line_features(lnotes, bpm, level_norm, cmap)
-        yline = feat["xnorm"]
+        yline = feat["xnorm"] if target == "x" else (feat["xnorm"] - feat["prev_x"])
         for i in range(max(0, (len(lnotes) - W) // STRIDE + 1)):
             s = i * STRIDE
-            X, _ = make_window(feat, s, s + W)
+            X, _ = make_window(feat, s, s + W, feature_set=feature_set)
             windows.append((X, yline[s:s + W].astype(np.float32)))
     return windows
 
@@ -60,10 +60,13 @@ def main():
     ap.add_argument("--roots", type=str, default=BASE,
                     help="逗号分隔的数据根列表（每个含 parsed/ 和 bpm/）")
     ap.add_argument("--level-extra", type=str, default=None)
+    ap.add_argument("--feature-set", type=str, default="base9", choices=list(FEATURE_ORDERS))
+    ap.add_argument("--target", type=str, default="x", choices=["x", "delta"],
+                    help="训练标签：x=绝对位置；delta=x-prev_x（配合 prev_x 走位移回归）")
     ap.add_argument("--aug-blank", type=float, default=0.0,
                     help="空白增强概率：train 窗口以该概率追加 y-=y[0] 的平移副本（val/test 不动）")
     args = ap.parse_args()
-
+    F = len(FEATURE_ORDERS[args.feature_set])
     outdir = artifact_path(args.out)
     roots = [r.strip() for r in args.roots.split(",") if r.strip()]
     if args.fids:
@@ -114,7 +117,7 @@ def main():
             stats["no_level"] += 1
         else:
             level_norm = float(lv) / LEVEL_DIV
-        w = build_song(notes, bpm, level_norm)
+        w = build_song(notes, bpm, level_norm, feature_set=args.feature_set, target=args.target)
         if not w:
             continue
         songs.append((fid, w))
@@ -132,7 +135,9 @@ def main():
 
     # --- 空白增强：仅对 train split 追加平移副本（y 从 0 开始），val/test 绝对不动 ---
     n_aug = 0
-    if args.aug_blank > 0:
+    if args.aug_blank > 0 and args.target == "delta":
+        print("target=delta：跳过空白增强（整体平移不改变窗内 Δx，只改首音，语义不成立）")
+    if args.aug_blank > 0 and args.target != "delta":
         aug_rng = np.random.RandomState(12345)  # 独立种子，保证可复现且不影响 shuffle
         aug_items = []
         for fid, wins in splits["train"]:
@@ -144,14 +149,16 @@ def main():
                     # chord_x 是绝对位置特征，必须同步平移，否则 X/y 语义不一致；
                     # 但 0 是"无和弦"哨兵（line_features 初始化为 0），不能参与平移，
                     # 否则 0-wy[0] 会凭空造出幻影和弦位置，污染增强窗口
-                    nz = wx2[:, 6] != 0
-                    wx2[nz, 6] = np.clip(wx2[nz, 6] - wy[0], -X_CLIP, X_CLIP).astype(np.float32)
+                    ci = FEATURE_ORDERS[args.feature_set].index("chord_x")
+                    nz = wx2[:, ci] != 0
+                    wx2[nz, ci] = np.clip(wx2[nz, ci] - wy[0], -X_CLIP, X_CLIP).astype(np.float32)
                     # prev_x 也是绝对位置特征，必须与 y 同步平移：
                     # 窗口第 0 位的 prev_x 是"线首哨兵 0"或"窗前一个真实音符"，
                     # 无法从值本身区分，故保持原位不动（最多差一个音符），
                     # 其余位置（j>=1）必然等于窗内 y[j-1]，无条件平移
-                    if wx2.shape[1] > 8:
-                        wx2[1:, 8] = np.clip(wx2[1:, 8] - wy[0], -X_CLIP, X_CLIP).astype(np.float32)
+                    if "prev_x" in FEATURE_ORDERS[args.feature_set]:
+                        pi = FEATURE_ORDERS[args.feature_set].index("prev_x")
+                        wx2[1:, pi] = np.clip(wx2[1:, pi] - wy[0], -X_CLIP, X_CLIP).astype(np.float32)
                     new_wins.append((wx2, wy2))
                     n_aug += 1
             aug_items.append((fid, new_wins))
@@ -159,11 +166,13 @@ def main():
         print(f"空白增强: p={args.aug_blank} 追加 {n_aug} 个 train 窗口")
 
     os.makedirs(outdir, exist_ok=True)
+    json.dump({"feature_set": args.feature_set, "target": args.target, "feat_dim": F},
+              open(os.path.join(outdir, "meta.json"), "w"), ensure_ascii=False, indent=1)
     json.dump(fid_split, open(os.path.join(outdir, "split.json"), "w"), ensure_ascii=False, indent=1)
 
     for split, items in splits.items():
         total_w = sum(len(w) for _, w in items)
-        X = np.zeros((total_w, W, FEAT_DIM), dtype=np.float32)
+        X = np.zeros((total_w, W, F), dtype=np.float32)
         y = np.zeros((total_w, W), dtype=np.float32)
         sid = []
         idx = 0

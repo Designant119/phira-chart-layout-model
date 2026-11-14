@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from traj_common import W, artifact_path
+from traj_common import W, FEATURE_ORDERS, artifact_path
 
 SMOOTH_TARGET = 0.4  # 相邻位移惩罚阈值（0.4*675=270px≈谱师中位）
 LAM_BOUND = 0.3      # 边界惩罚权重默认（--lam-bound 可覆盖）
@@ -58,7 +58,9 @@ def train():
     ap.add_argument("--ckpt", type=str, required=True)
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--feat", type=int, default=9)
+    ap.add_argument("--feat", type=int, default=0, help="0=按 --feature-set 自动")
+    ap.add_argument("--feature-set", type=str, default="base9", choices=list(FEATURE_ORDERS))
+    ap.add_argument("--target", type=str, default="x", choices=["x", "delta"])
     ap.add_argument("--causal", type=int, default=1,
                     help="1=因果注意力（有 prev_x 时必须，否则标签泄漏）；0=旧双向口径")
     ap.add_argument("--prev-noise", type=float, default=0.25,
@@ -76,17 +78,19 @@ def train():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
+    F = len(FEATURE_ORDERS[args.feature_set])
+    PREV = FEATURE_ORDERS[args.feature_set].index("prev_x") if "prev_x" in FEATURE_ORDERS[args.feature_set] else -1
     datadir = artifact_path(args.data)
     ckdir = artifact_path(args.ckpt)
     Xtr, ytr, _ = load_npz(datadir, 'train')
     Xva, yva, _ = load_npz(datadir, 'val')
-    if Xtr.shape[2] != args.feat:
-        raise SystemExit(f"数据特征 {Xtr.shape[2]} != --feat {args.feat}")
+    if Xtr.shape[2] != F or (args.feat and args.feat != F):
+        raise SystemExit(f"数据特征 {Xtr.shape[2]} != feature_set {args.feature_set}({F} 维)")
     if Xtr.shape[1] != W:
         raise SystemExit(f"数据窗长 {Xtr.shape[1]} != W {W}")
-    print(f"train {Xtr.shape[0]} 窗口 / val {Xva.shape[0]} 窗口 / feat={args.feat} / seed={args.seed}", flush=True)
+    print(f"train {Xtr.shape[0]} 窗口 / val {Xva.shape[0]} 窗口 / feat={F}({args.feature_set}) / target={args.target} / seed={args.seed}", flush=True)
 
-    model = TrajTransformer(feat=args.feat)
+    model = TrajTransformer(feat=F)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     mse = nn.MSELoss()
 
@@ -130,9 +134,9 @@ def train():
         for i in range(0, n, args.batch):
             ids = idx[i:i + args.batch]
             xb, yb = X[ids], y[ids]
-            if grad and prev_noise > 0 and xb.shape[2] > 8:
+            if grad and prev_noise > 0 and PREV >= 0:
                 xb = xb.clone()
-                xb[:, :, 8] = (xb[:, :, 8] + torch.randn_like(xb[:, :, 8]) * prev_noise).clamp(-1.2, 1.2)
+                xb[:, :, PREV] = (xb[:, :, PREV] + torch.randn_like(xb[:, :, PREV]) * prev_noise).clamp(-1.2, 1.2)
             if grad:
                 opt.zero_grad()
             pred = model(xb, causal=bool(args.causal))
@@ -174,7 +178,7 @@ def train():
         else:
             wait += 1
         json.dump({'epoch': ep + 1, 'best_val': best_val, 'best_epoch': best_ep, 'wait': wait,
-                   'lr': args.lr, 'feat': args.feat, 'metric': 'val_mse',
+                   'lr': args.lr, 'feat': F, 'feature_set': args.feature_set, 'target': args.target, 'metric': 'val_mse',
                    'causal': args.causal, 'prev_noise': args.prev_noise,
                    'lam_smooth': args.lam_smooth, 'lam_bound': args.lam_bound},
                   open(os.path.join(ckdir, 'ckpt_state.json'), 'w'))

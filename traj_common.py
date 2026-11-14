@@ -15,6 +15,14 @@ X_SCALE, X_CLIP = 675.0, 1.2
 LEVEL_DIV = 25.0
 FEAT_DIM = 9                  # 8 维 + prev_x（自回归推理用；旧 8 维 ckpt 仍可推理，显式传 feat_dim=8）
 PREV_X_COL = 8                # prev_x 特征列下标（feat_dim>=9 时有效）
+
+# 特征列顺序的唯一出处。base9=现行口径；nopos8=砍掉 pos（槽位身份证）但保留 prev_x；
+# legacy8=旧 ckpt 的 8 维（无 prev_x）。
+FEATURE_ORDERS = {
+    "base9":   ("dt", "phase", "density", "pos", "ty", "durs", "chord_x", "level", "prev_x"),
+    "nopos8":  ("dt", "phase", "density", "ty", "durs", "chord_x", "level", "prev_x"),
+    "legacy8": ("dt", "phase", "density", "pos", "ty", "durs", "chord_x", "level"),
+}
 KEEP_TYPES = (1, 2)          # 只排 Tap/Hold
 LEVEL_NORM_DEFAULT = 0.0     # 缺难度兜底：训练=推理统一（改这里必须重建 npz 并重训）
 
@@ -115,25 +123,29 @@ def window_starts(n, w=W, stride=STRIDE):
     return [(s, min(s + w, n)) for s in starts]
 
 
-def make_window(feat, s, e, w=W, feat_dim=None):
+def make_window(feat, s, e, w=W, feat_dim=None, feature_set=None):
     """整线特征切 [s, e) 窗口 -> (X (w,feat_dim) 不足补零, vlen)。
     要求 e-s <= w（window_starts 保证）；density = vlen/span/20，
     全窗 vlen==W 时与训练公式 W/span/20 完全一致。
-    feat_dim=8 用于兼容旧 ckpt（不拼 prev_x 列）；默认走 FEAT_DIM。"""
-    fd = FEAT_DIM if feat_dim is None else int(feat_dim)
+    feature_set 缺省按 feat_dim 推断（9→base9，8→legacy8），保证旧 ckpt 可推理。"""
+    if feature_set is None:
+        feature_set = "base9" if (feat_dim is None or int(feat_dim) >= 9) else "legacy8"
+    order = FEATURE_ORDERS[feature_set]
+    fd = len(order)
+    if feat_dim is not None and int(feat_dim) != fd:
+        raise ValueError(f"feat_dim {feat_dim} 与 feature_set {feature_set}({fd} 维) 不一致")
     vlen = e - s
     assert 0 < vlen <= w, f"窗口长度 {vlen} 越界，须在 (0, {w}]（检查 window_starts 调用）"
     span = max(float(feat["ts"][e - 1] - feat["ts"][s]), 1e-6)
     density = np.clip(float(vlen) / span / 20.0, 0, 1)
-    cols = [
-        feat["dt"][s:e], feat["phase"][s:e],
-        np.full(vlen, density, dtype=np.float32),
-        feat["pos"][s:e], feat["ty"][s:e], feat["durs"][s:e],
-        feat["chord_x"][s:e],
-        np.full(vlen, feat["level"], dtype=np.float32),
-    ]
-    if fd >= 9:
-        cols.append(feat["prev_x"][s:e])
+    cols = []
+    for name in order:
+        if name == "density":
+            cols.append(np.full(vlen, density, dtype=np.float32))
+        elif name == "level":
+            cols.append(np.full(vlen, feat["level"], dtype=np.float32))
+        else:
+            cols.append(feat[name][s:e])
     seg = np.stack(cols, axis=1).astype(np.float32)
     if vlen < w:
         seg = np.concatenate([seg, np.zeros((w - vlen, fd), dtype=np.float32)], axis=0)
