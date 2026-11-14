@@ -22,6 +22,8 @@ FEATURE_ORDERS = {
     "base9":   ("dt", "phase", "density", "pos", "ty", "durs", "chord_x", "level", "prev_x"),
     "nopos8":  ("dt", "phase", "density", "ty", "durs", "chord_x", "level", "prev_x"),
     "legacy8": ("dt", "phase", "density", "pos", "ty", "durs", "chord_x", "level"),
+    "audio24": ("dt", "phase", "density", "pos", "ty", "durs", "chord_x", "level", "prev_x",
+                *[f"a{i}" for i in range(15)]),
 }
 KEEP_TYPES = (1, 2)          # 只排 Tap/Hold
 LEVEL_NORM_DEFAULT = 0.0     # 缺难度兜底：训练=推理统一（改这里必须重建 npz 并重训）
@@ -65,7 +67,18 @@ def chord_x_map(notes):
     return out
 
 
-def line_features(lnotes, bpm, level_norm, chord_map=None):
+def load_audio_feat(audio_dir, fid):
+    """读 data/audio_feat/<fid>.npz -> (times, feats) 或 None。"""
+    if not audio_dir:
+        return None
+    p = os.path.join(audio_dir, f"{fid}.npz")
+    if not os.path.exists(p):
+        return None
+    d = np.load(p)
+    return d["times"], d["feats"].astype(np.float32)
+
+
+def line_features(lnotes, bpm, level_norm, chord_map=None, audio=None):
     """整条线（已按 t 排序）-> 每音符特征 dict。按整线计算，窗口切片交给 make_window，
     保证 dt（窗口首音=真实间隔）与 pos（线内索引 %W 回卷）训练/推理同口径。
     返回 keys: ts, dt, phase, pos, ty, durs, chord_x, level, xnorm(标签)。"""
@@ -94,6 +107,19 @@ def line_features(lnotes, bpm, level_norm, chord_map=None):
             if m is not None:
                 chord_x[i] = m
 
+    feat_out = {}
+    # 音频特征：按音符时间取最近帧（15 维：12 色度 + 能量 + 通量 + 质心）
+    if audio is not None:
+        at, af = audio
+        idx = np.clip(np.searchsorted(at, ts) - 1, 0, len(at) - 1)
+        right = np.clip(idx + 1, 0, len(at) - 1)
+        idx = np.where(np.abs(at[right] - ts) < np.abs(at[idx] - ts), right, idx)
+        for k in range(af.shape[1]):
+            feat_out[f"a{k}"] = af[idx, k]
+    else:
+        for k in range(15):
+            feat_out[f"a{k}"] = np.zeros(N, dtype=np.float32)
+
     xs = np.array([nt["x"] for nt in lnotes], dtype=np.float32)
     xnorm = np.clip(xs / X_SCALE, -X_CLIP, X_CLIP).astype(np.float32)
     # prev_x：整线上一音符的 x（线首补 0）。必须按整线算完再切窗，
@@ -101,12 +127,13 @@ def line_features(lnotes, bpm, level_norm, chord_map=None):
     prev_x = np.zeros(N, dtype=np.float32)
     if N > 1:
         prev_x[1:] = xnorm[:-1]
-    return {
+    feat_out.update({
         "ts": ts, "dt": dt, "phase": phase, "pos": pos, "ty": ty,
         "durs": durs, "chord_x": chord_x, "level": np.float32(level_norm),
         "prev_x": prev_x,
         "xnorm": xnorm,
-    }
+    })
+    return feat_out
 
 
 def window_starts(n, w=W, stride=STRIDE):

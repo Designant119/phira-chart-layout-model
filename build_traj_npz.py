@@ -13,12 +13,12 @@ from collections import defaultdict
 
 from traj_common import (W, STRIDE, X_CLIP, LEVEL_DIV, FEAT_DIM, FEATURE_ORDERS, KEEP_TYPES,
                          LEVEL_NORM_DEFAULT, chord_x_map, line_features, make_window,
-                         artifact_path)
+                         load_audio_feat, artifact_path)
 
 BASE = "/home/user/Doubao/chats/38445055719679234/phira_charts_dl"
 
 
-def build_song(notes, bpm, level_norm=0.0, feature_set="base9", target="x"):
+def build_song(notes, bpm, level_norm=0.0, feature_set="base9", target="x", audio=None):
     """返回窗口列表 [(X128x8, y128)]；target=x 时 y=xnorm，target=delta 时 y=xnorm-prev_x。
     只用 Tap(1)/Hold(2)，排除 Drag(3)/Flick(4)；窗口为对齐全窗
     （与历史 npz/ckpt 同口径，保证可比性；推理侧的尾窗全覆盖见 traj_common.window_starts）。"""
@@ -34,7 +34,7 @@ def build_song(notes, bpm, level_norm=0.0, feature_set="base9", target="x"):
         if len(lnotes) < 4:
             continue
         lnotes = sorted(lnotes, key=lambda n: n["t"])
-        feat = line_features(lnotes, bpm, level_norm, cmap)
+        feat = line_features(lnotes, bpm, level_norm, cmap, audio=audio)
         yline = feat["xnorm"] if target == "x" else (feat["xnorm"] - feat["prev_x"])
         for i in range(max(0, (len(lnotes) - W) // STRIDE + 1)):
             s = i * STRIDE
@@ -61,6 +61,8 @@ def main():
                     help="逗号分隔的数据根列表（每个含 parsed/ 和 bpm/）")
     ap.add_argument("--level-extra", type=str, default=None)
     ap.add_argument("--feature-set", type=str, default="base9", choices=list(FEATURE_ORDERS))
+    ap.add_argument("--audio-dir", type=str, default=os.path.join(BASE, "audio_feat"),
+                    help="音频特征缓存目录（<fid>.npz）；feature_set=audio24 时使用")
     ap.add_argument("--target", type=str, default="x", choices=["x", "delta"],
                     help="训练标签：x=绝对位置；delta=x-prev_x（配合 prev_x 走位移回归）")
     ap.add_argument("--aug-blank", type=float, default=0.0,
@@ -117,7 +119,8 @@ def main():
             stats["no_level"] += 1
         else:
             level_norm = float(lv) / LEVEL_DIV
-        w = build_song(notes, bpm, level_norm, feature_set=args.feature_set, target=args.target)
+        audio = load_audio_feat(args.audio_dir, fid) if args.feature_set == "audio24" else None
+        w = build_song(notes, bpm, level_norm, feature_set=args.feature_set, target=args.target, audio=audio)
         if not w:
             continue
         songs.append((fid, w))

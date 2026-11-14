@@ -22,6 +22,7 @@ import torch
 
 from traj_common import (W, X_SCALE, X_CLIP, KEEP_TYPES, LEVEL_DIV, LEVEL_NORM_DEFAULT,
                          FEAT_DIM, FEATURE_ORDERS, line_features, window_starts, make_window,
+                         load_audio_feat,
                          enforce_chord_gaps, artifact_path)
 from train_traj import TrajTransformer
 
@@ -38,7 +39,7 @@ def get_level_norm(fid):
     return LEVEL_NORM_DEFAULT
 
 
-def infer_notes(fid, model, chord_map, level_norm, feat_dim=None, feature_set=None, target="x"):
+def infer_notes(fid, model, chord_map, level_norm, feat_dim=None, feature_set=None, target="x", audio=None):
     """一遍推理。chord_map: {t3: xnorm}（第一遍={}，第二遍=第一遍预测的同刻均值）。
     feat_dim>=9（带 prev_x）：逐音自回归，每个音只被预测一次，窗口末尾位取输出；
     feat_dim==8（旧 ckpt）：走旧的重叠窗口平均路径。"""
@@ -72,7 +73,7 @@ def infer_notes(fid, model, chord_map, level_norm, feat_dim=None, feature_set=No
                 for nt in lnotes:
                     emit(nt, nt["x"], "fallback")
                 continue
-            feat = line_features(lnotes, bpm, level_norm, chord_map)
+            feat = line_features(lnotes, bpm, level_norm, chord_map, audio=audio)
 
             if prev_col >= 0:
                 # --- 自回归：第 i 音用窗口 [i-127, i]，prev_x 填已预测值 ---
@@ -135,6 +136,7 @@ def main():
                     help="ckpt 目录（相对 cwd 或绝对路径）")
     ap.add_argument("--out", type=str, default=None)
     ap.add_argument("--pass1", action="store_true", help="只跑第一遍(chord_x=0)")
+    ap.add_argument("--audio-dir", type=str, default=os.path.join(BASE, "audio_feat"))
     args = ap.parse_args()
 
     ckpt_dir = artifact_path(args.ckpt)
@@ -150,9 +152,10 @@ def main():
         fset = st.get("feature_set") or fset
         target = st.get("target", "x")
     lvl = get_level_norm(args.fid)
+    audio = load_audio_feat(args.audio_dir, args.fid) if fset == "audio24" else None
 
     # 第一遍：chord_x=0
-    pass1 = infer_notes(args.fid, model, {}, lvl, feat_dim=feat, feature_set=fset, target=target)
+    pass1 = infer_notes(args.fid, model, {}, lvl, feat_dim=feat, feature_set=fset, target=target, audio=audio)
     if args.pass1:
         notes = pass1
     else:
@@ -162,7 +165,7 @@ def main():
             by_t[round(n["t"], 3)].append(n["x"])
         chord_map = {t: float(np.clip(np.mean(xs) / X_SCALE, -X_CLIP, X_CLIP))
                      for t, xs in by_t.items() if len(xs) >= 2}
-        notes = infer_notes(args.fid, model, chord_map, lvl, feat_dim=feat, feature_set=fset, target=target)
+        notes = infer_notes(args.fid, model, chord_map, lvl, feat_dim=feat, feature_set=fset, target=target, audio=audio)
     notes = enforce_chord_gaps(notes)
     n_fb = sum(1 for n in notes if n.get("src") == "fallback")
     result = {"fid": args.fid, "mode": "traj", "ckpt": args.ckpt,
