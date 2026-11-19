@@ -86,9 +86,15 @@ def main():
         aw = np.array([1.0] * (h + 1))
         al = wchoice(rng, list(range(h + 1)), aw)
         ar = ncol - 1 - al
-        pool = sorted(set([max(0, al - 1), al, min(ncol - 1, al + 1),
-                           max(0, ar - 1), ar, min(ncol - 1, ar + 1), h]))
-        pw = [2.0 if p in (al, ar) else 0.6 for p in pool]
+        pool = list(range(ncol))
+
+        def anchor_w(p):
+            if p == h:
+                return 0.10
+            d = min(abs(p - al), abs(p - ar))
+            return {0: 1.6, 1: 1.0, 2: 0.7}.get(d, 0.5)
+
+        pw = [anchor_w(p) for p in pool]
         prevc = h
 
         def side_of(p):
@@ -98,7 +104,7 @@ def main():
             items = groups[bt]
             k = len(items)
             if k == 1:
-                if rng.random() < SAME_CELL_P:
+                if prevc != h and rng.random() < SAME_CELL_P:
                     c = prevc
                 else:
                     sd = side_of(prevc)
@@ -107,7 +113,7 @@ def main():
                         cw = pw
                     else:
                         cand = [p for p in pool if side_of(p) == sd]
-                        cw = [2.0 if p in (al, ar) else 0.6 for p in cand]
+                        cw = [anchor_w(p) for p in cand]
                     if not cand:
                         cand, cw = pool, pw
                     c = wchoice(rng, cand, cw)
