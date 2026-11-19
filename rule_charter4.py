@@ -15,11 +15,14 @@ from phira_fetch import rpe_time_to_beat
 NB = 81
 HALF = 675.0
 SEG = 24
-SAME_CELL_P = 0.20      # 原地同列概率（真谱这首 21%，全量 13%）
-KEEP_SIDE_P = 0.30      # 同侧连走一步概率（真谱连走≥2步约 23%）
+SAME_CELL_P = 0.28      # 原地同列概率（真谱这首 19.3%，单音口径需更高）
+FLIP_P = 0.53           # 单步换向概率（稳态交替≈此值，真谱 0.53）
 GAP_CHOICES = [5, 5, 5, 4, 6]
 NCOL_CHOICES = [13, 13, 13, 12, 14]
 SWAP_P = 0.0            # 段间换网格概率：整首一套对齐网格
+# 非零步长的跳列数权重（按真谱 15831 实测计数）
+STEP_W = [43, 63, 128, 285, 90, 183, 72, 109, 23, 11, 0, 23]
+STEP_IDX = list(range(1, 13))
 
 
 def g2x(c):
@@ -82,49 +85,37 @@ def main():
     h = int(round(half))
 
     for seg in segs:
-        # 段内选一对对称锚列，单音集中在锚列邻域反复，段间换锚铺开
+        # 段内选一对对称锚列供多押配对；单音走位移状态机游走
         aw = np.array([1.0] * (h + 1))
         al = wchoice(rng, list(range(h + 1)), aw)
         ar = ncol - 1 - al
-        pool = list(range(ncol))
-
-        def anchor_w(p):
-            if p == h:
-                return 0.10
-            d = min(abs(p - al), abs(p - ar))
-            return {0: 1.6, 1: 0.7, 2: 0.8}.get(d, 0.55)
-
-        pw = [anchor_w(p) for p in pool]
-        prevc = h
-
-        def side_of(p):
-            return 0 if p == h else (-1 if p < h else 1)
+        i = h
+        dirn = 1
 
         for bt in seg:
             items = groups[bt]
             k = len(items)
             if k == 1:
-                if prevc != h and rng.random() < SAME_CELL_P:
-                    c = prevc
+                if rng.random() < SAME_CELL_P:
+                    c = i
                 else:
-                    sd = side_of(prevc)
-                    if sd == 0 or rng.random() >= KEEP_SIDE_P:
-                        cand = pool
-                        cw = pw
-                    else:
-                        cand = [p for p in pool if side_of(p) == sd]
-                        cw = [anchor_w(p) for p in cand]
-                    if not cand:
-                        cand, cw = pool, pw
-                    c = wchoice(rng, cand, cw)
-                prevc = c
+                    step = wchoice(rng, STEP_IDX, STEP_W)
+                    if rng.random() < FLIP_P:
+                        dirn = -dirn
+                    nc = i + dirn * step
+                    if nc < 0:
+                        nc = -nc; dirn = 1
+                    elif nc > ncol - 1:
+                        nc = 2 * (ncol - 1) - nc; dirn = -1
+                    c = int(np.clip(nc, 0, ncol - 1))
+                i = c
                 pos = [c]
             elif k == 2:
-                pos = [al, ar]; prevc = h
+                pos = [al, ar]; i = ar
             elif k == 3:
-                pos = [al, h, ar]; prevc = h
+                pos = [al, h, ar]; i = h
             else:
-                pos = [int(round(v)) for v in np.linspace(al, ar, k)]; prevc = h
+                pos = [int(round(v)) for v in np.linspace(al, ar, k)]; i = h
             seen, clean = set(), []
             for p in pos:
                 p = int(np.clip(p, 0, ncol - 1))
