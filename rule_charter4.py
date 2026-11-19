@@ -110,17 +110,20 @@ def main():
                 i = c
                 pos = [c]
             elif k == 2:
-                w2 = rng.choice([2, 3, 3, 4])
-                l = int(np.clip(h - w2, 0, ncol - 1)); r = int(np.clip(h + w2, 0, ncol - 1))
+                ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                w2 = rng.choice([2, 3, 3, 3, 3, 4, 6])
+                l = int(np.clip(ch - w2, 0, ncol - 1)); r = int(np.clip(ch + w2, 0, ncol - 1))
                 pos = [l, r]; i = r
             elif k == 3:
+                ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
                 w3 = rng.choice([4, 4, 5, 5])
-                l = int(np.clip(h - w3, 0, ncol - 1)); r = int(np.clip(h + w3, 0, ncol - 1))
-                mid = int(np.clip(h + rng.choice([-1, 0, 0, 1]), 0, ncol - 1))
+                l = int(np.clip(ch - w3, 0, ncol - 1)); r = int(np.clip(ch + w3, 0, ncol - 1))
+                mid = int(np.clip(ch + rng.choice([-1, 0, 0, 1]), 0, ncol - 1))
                 pos = [l, mid, r]; i = h
             else:
-                w4 = rng.choice([2, 3, 3, 4])
-                l = int(np.clip(h - w4, 0, ncol - 1)); r = int(np.clip(h + w4, 0, ncol - 1))
+                ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                w4 = rng.choice([2, 3, 3, 3, 3, 4, 6])
+                l = int(np.clip(ch - w4, 0, ncol - 1)); r = int(np.clip(ch + w4, 0, ncol - 1))
                 if rng.random() < 0.6 or h < 2:
                     pos = [l, l, r, r]
                 else:
