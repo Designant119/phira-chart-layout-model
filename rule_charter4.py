@@ -85,10 +85,7 @@ def main():
     h = int(round(half))
 
     for seg in segs:
-        # 段内选一对对称锚列供多押配对；单音走位移状态机游走
-        aw = np.array([1.0] * h)
-        al = wchoice(rng, list(range(h)), aw)
-        ar = ncol - 1 - al
+        # 单音走位移状态机游走；多押按押型独立选对称宽度
         i = h
         dirn = 1
 
@@ -113,16 +110,22 @@ def main():
                 i = c
                 pos = [c]
             elif k == 2:
-                pos = [al, ar]; i = ar
+                w2 = rng.choice([2, 3, 3, 4])
+                l = int(np.clip(h - w2, 0, ncol - 1)); r = int(np.clip(h + w2, 0, ncol - 1))
+                pos = [l, r]; i = r
             elif k == 3:
+                w3 = rng.choice([4, 4, 5, 5])
+                l = int(np.clip(h - w3, 0, ncol - 1)); r = int(np.clip(h + w3, 0, ncol - 1))
                 mid = int(np.clip(h + rng.choice([-1, 0, 0, 1]), 0, ncol - 1))
-                pos = [al, mid, ar]; i = h
+                pos = [l, mid, r]; i = h
             else:
+                w4 = rng.choice([2, 3, 3, 4])
+                l = int(np.clip(h - w4, 0, ncol - 1)); r = int(np.clip(h + w4, 0, ncol - 1))
                 if rng.random() < 0.6 or h < 2:
-                    pos = [al, al, ar, ar]
+                    pos = [l, l, r, r]
                 else:
                     am = wchoice(rng, list(range(1, h)), [1.0] * (h - 1))
-                    pos = [al, am, ncol - 1 - am, ar]
+                    pos = [l, am, ncol - 1 - am, r]
                 pos = pos[:k]; i = h
             seen, clean = set(), []
             for p in pos:
