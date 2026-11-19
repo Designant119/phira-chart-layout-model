@@ -28,7 +28,7 @@ def to_bin(y, nb):
     return np.clip(np.round((y + 1.0) / 2.0 * (nb - 1)).astype(np.int64), 0, nb - 1)
 
 
-def parallel_eval(net, F, Y, M, nb, sample=False, seed=0, bs=256):
+def parallel_eval(net, F, Y, M, nb, sample=False, seed=0, bs=96):
     net.eval()
     rng = np.random.default_rng(seed)
     out = []
@@ -54,20 +54,22 @@ def main():
     ap.add_argument('--split', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--epochs', type=int, default=6)
-    ap.add_argument('--bs', type=int, default=64)
+    ap.add_argument('--bs', type=int, default=32)
     ap.add_argument('--lr', type=float, default=5e-4)
     ap.add_argument('--max-train', type=int, default=40000)
     ap.add_argument('--bins', type=int, default=81)
+    ap.add_argument('--resume', default='')
     a = ap.parse_args()
 
     torch.set_num_threads(2)
     d = np.load(a.data, allow_pickle=True)
-    Ffull = d['F'].astype(np.float32)
+    Ffull = d['F']
+    KEEP = [0, 1, 2, 3, 4, 5, 6, 7, 11, 12, 13]
+    F = np.ascontiguousarray(Ffull[:, :, KEEP], dtype=np.float32)
+    del Ffull
     Y = d['Y'].astype(np.float32)
     M = d['M'].astype(np.float32)
     fid = d['fid'].astype(str)
-    # 去掉位置自回归的三维（8/9/10），并行全靠节奏与线号
-    F = np.concatenate([Ffull[:, :, :8], Ffull[:, :, 11:]], axis=-1)
     NB = a.bins
     YB = to_bin(Y, NB)
 
@@ -80,10 +82,17 @@ def main():
     print('windows', len(F), 'feat', F.shape[-1], 'train', len(tr_idx), 'val', int(va.sum()), 'test', int(te.sum()), 'bins', NB, flush=True)
 
     net = ParNet(nf=F.shape[-1], nb=NB)
+    start_ep = 1
+    rpath = a.out[:-3] + '_last.pt'
+    if a.resume and os.path.exists(rpath):
+        ck = torch.load(rpath, map_location='cpu')
+        net.load_state_dict(ck['model'])
+        start_ep = int(ck.get('epoch', 0)) + 1
+        print('resumed from %s at epoch %d' % (rpath, start_ep), flush=True)
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-5)
     ce = nn.CrossEntropyLoss(reduction='none')
     best = 1e9
-    for ep in range(a.epochs):
+    for ep in range(start_ep - 1, a.epochs):
         t0 = time.time()
         net.train()
         dl = DataLoader(TensorDataset(torch.from_numpy(F[tr_idx]), torch.from_numpy(YB[tr_idx]), torch.from_numpy(M[tr_idx])),
@@ -99,6 +108,7 @@ def main():
             n += len(f)
         vmae, _ = parallel_eval(net, F[va], Y[va], M[va], NB)
         tmae, _ = parallel_eval(net, F[te], Y[te], M[te], NB)
+        torch.save({'model': net.state_dict(), 'bins': NB, 'feat': F.shape[-1], 'epoch': ep + 1, 'val': float(vmae)}, rpath)
         tag = ''
         if vmae < best:
             best = vmae
