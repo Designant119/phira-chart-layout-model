@@ -15,8 +15,8 @@ from phira_fetch import rpe_time_to_beat
 NB = 81
 HALF = 675.0
 SEG = 24
-SAME_CELL_P = 0.22      # 原地同列概率（真谱全量 13%，这首 21%）
-FLIP_P = 0.45           # 换向概率
+SAME_CELL_P = 0.20      # 原地同列概率（真谱这首 21%，全量 13%）
+KEEP_SIDE_P = 0.22      # 同侧连走一步概率（真谱连走≥2步约 23%）
 GAP_CHOICES = [5, 5, 5, 4, 6]
 NCOL_CHOICES = [13, 13, 13, 12, 14]
 SWAP_P = 0.0            # 段间换网格概率：整首一套对齐网格
@@ -83,24 +83,42 @@ def main():
 
     for seg in segs:
         # 段内选一对对称锚列，单音集中在锚列邻域反复，段间换锚铺开
-        aw = np.array([1.0 / (1.0 + abs(i - 3.2) * 0.35) for i in range(h + 1)])
+        aw = np.array([1.0] * (h + 1))
         al = wchoice(rng, list(range(h + 1)), aw)
         ar = ncol - 1 - al
         pool = sorted(set([max(0, al - 1), al, min(ncol - 1, al + 1),
                            max(0, ar - 1), ar, min(ncol - 1, ar + 1), h]))
         pw = [2.0 if p in (al, ar) else 0.6 for p in pool]
+        prevc = h
+
+        def side_of(p):
+            return 0 if p == h else (-1 if p < h else 1)
 
         for bt in seg:
             items = groups[bt]
             k = len(items)
             if k == 1:
-                pos = [wchoice(rng, pool, pw)]
+                if rng.random() < SAME_CELL_P:
+                    c = prevc
+                else:
+                    sd = side_of(prevc)
+                    if sd == 0 or rng.random() >= KEEP_SIDE_P:
+                        cand = pool
+                        cw = pw
+                    else:
+                        cand = [p for p in pool if side_of(p) == sd]
+                        cw = [2.0 if p in (al, ar) else 0.6 for p in cand]
+                    if not cand:
+                        cand, cw = pool, pw
+                    c = wchoice(rng, cand, cw)
+                prevc = c
+                pos = [c]
             elif k == 2:
-                pos = [al, ar]
+                pos = [al, ar]; prevc = h
             elif k == 3:
-                pos = [al, h, ar]
+                pos = [al, h, ar]; prevc = h
             else:
-                pos = [int(round(v)) for v in np.linspace(al, ar, k)]
+                pos = [int(round(v)) for v in np.linspace(al, ar, k)]; prevc = h
             seen, clean = set(), []
             for p in pos:
                 p = int(np.clip(p, 0, ncol - 1))
