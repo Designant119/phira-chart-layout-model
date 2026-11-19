@@ -75,7 +75,8 @@ def eval_net(net, data, idx, maxlen, device, bs=4):
             yv = y.numpy(); mv = m.numpy()
             gok += (pred[mv] == yv[mv]).sum(); tot += mv.sum()
             px = pred / (NB - 1) * 2 - 1
-            mae.append(np.abs(px[mv] - yv[mv] / (NB - 1) * 2 + 1).mean() * 675)
+            yt = yv[mv] / (NB - 1) * 2 - 1
+            mae.append(np.abs(px[mv] - yt).mean() * 675)
     return gok / tot, float(np.mean(mae))
 
 
