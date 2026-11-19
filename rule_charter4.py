@@ -16,7 +16,7 @@ NB = 81
 HALF = 675.0
 SEG = 24
 SAME_CELL_P = 0.20      # 原地同列概率（真谱这首 21%，全量 13%）
-KEEP_SIDE_P = 0.22      # 同侧连走一步概率（真谱连走≥2步约 23%）
+KEEP_SIDE_P = 0.30      # 同侧连走一步概率（真谱连走≥2步约 23%）
 GAP_CHOICES = [5, 5, 5, 4, 6]
 NCOL_CHOICES = [13, 13, 13, 12, 14]
 SWAP_P = 0.0            # 段间换网格概率：整首一套对齐网格
@@ -92,7 +92,7 @@ def main():
             if p == h:
                 return 0.10
             d = min(abs(p - al), abs(p - ar))
-            return {0: 1.6, 1: 1.0, 2: 0.7}.get(d, 0.5)
+            return {0: 1.6, 1: 0.7, 2: 0.8}.get(d, 0.55)
 
         pw = [anchor_w(p) for p in pool]
         prevc = h
