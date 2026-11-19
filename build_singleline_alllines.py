@@ -114,12 +114,13 @@ for r in roots:
 print('charts', len(rows), 'notes', sum(len(r[1]) for r in rows),
       'val', sum(r[0] in val for r in rows), 'test', sum(r[0] in test for r in rows), flush=True)
 
-F, Y, M, FID, ST, LN = [], [], [], [], [], []
+F, Y, M, FID, ST, LN, G = [], [], [], [], [], [], []
 for fid, x, t, ty, dur, ln, raw_n in rows:
     n = len(x)
     chord = chord_counts(t)
     dens = dens_counts(t, 4.0)
     crank, cspan, cmeand = chord_group(x, t)
+    _, grp = np.unique(t, return_inverse=True)
     for s in range(0, max(1, n - W + 1), STRIDE):
         e = min(n, s + W)
         m = np.zeros(W, np.float32)
@@ -129,6 +130,8 @@ for fid, x, t, ty, dur, ln, raw_n in rows:
         y[:e - s] = x[s:e]
         l = np.zeros(W, np.int16)
         l[:e - s] = ln[s:e]
+        g = np.zeros(W, np.int64)
+        g[:e - s] = grp[s:e]
         prev = 0.0
         prev2 = 0.0
         run = 0
@@ -155,6 +158,7 @@ for fid, x, t, ty, dur, ln, raw_n in rows:
         LN.append(l)
         FID.append(fid)
         ST.append(s)
+        G.append(g)
         if e >= n:
             break
 
@@ -164,5 +168,6 @@ M = np.stack(M)
 LN = np.stack(LN)
 FID = np.array(FID)
 ST = np.array(ST)
-np.savez_compressed(a.out, F=F, Y=Y, M=M, fid=FID, start=ST, line=LN)
+G = np.stack(G)
+np.savez_compressed(a.out, F=F, Y=Y, M=M, fid=FID, start=ST, line=LN, G=G)
 print('windows', len(F), 'dim', F.shape[-1], 'notes_in_windows', int(M.sum()), flush=True)

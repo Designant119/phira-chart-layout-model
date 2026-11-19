@@ -73,7 +73,7 @@ def collect(chart):
     return rec
 
 
-def build_feats(rec, nf=14):
+def build_feats(rec):
     x = np.array([r['x'] for r in rec], np.float32) / XS
     t = np.array([r['t'] for r in rec], np.float32)
     ty = np.array([r['type'] for r in rec], np.int32)
@@ -86,7 +86,7 @@ def build_feats(rec, nf=14):
     F, IDX = [], []
     for s in range(0, max(1, n - W + 1), STRIDE):
         e = min(n, s + W)
-        f = np.zeros((W, nf), np.float32)
+        f = np.zeros((W, 17), np.float32)
         prev = prev2 = 0.0
         run = 0
         for k in range(W):
@@ -100,10 +100,9 @@ def build_feats(rec, nf=14):
                 lc = 0.0 if int(ln[i]) == int(ln[i - 1]) else 1.0
                 lgap = np.log1p(abs(int(ln[i]) - int(ln[i - 1]) / 10.0)) if lc else 0.0
                 run = 1 if lc else run + 1
-            feat = [np.log1p(dt), *(ty[i] == np.arange(1, 5)), np.log1p(max(0.0, dur[i])),
+            f[k] = [np.log1p(dt), *(ty[i] == np.arange(1, 5)), np.log1p(max(0.0, dur[i])),
                     np.log1p(chord[i]), np.log1p(dens[i]), prev, prev2, prev - prev2,
                     lc, lgap, np.log1p(run), crank[i], 0.0, 0.0]
-            f[k] = feat[:nf]
             prev2 = prev
             prev = x[i]
         F.append(f)
@@ -138,16 +137,30 @@ def main():
 
     ck = torch.load(a.model, map_location='cpu')
     nb = ck.get('bins', 81)
-    nf = ck.get('nf', 14)
-    F, IDX, n = build_feats(keep, nf=nf)
-    net = DeltaNet(nb=nb, nf=nf); net.load_state_dict(ck['model'])
+    F, IDX, n = build_feats(keep)
 
     Y = np.zeros((len(F), W), np.float32); M = np.zeros_like(Y)
     for wi, (s, e) in enumerate(IDX):
         Y[wi, :e - s] = [r['x'] / XS for r in keep[s:e]]
         M[wi, :e - s] = 1
-    prior = np.bincount(to_bin(Y[M == 1], nb), minlength=nb).astype(np.float64)
-    _, P = ar_eval(net, F, Y, M, nb, sample=True, guard=True, prior=prior, alpha=a.alpha, scale=a.scale)
+
+    if 'KEEP' in ck:
+        # 整押并行版：整窗一次出位置，不走递归
+        from train_parallel_grp import ParNet
+        keep_idx = ck['KEEP']
+        Fp = np.ascontiguousarray(F[:, :, keep_idx], dtype=np.float32)
+        net = ParNet(nb=nb, nf=len(keep_idx))
+        net.load_state_dict(ck['model']); net.eval()
+        with torch.no_grad():
+            logits = net(torch.from_numpy(Fp))
+            idx = logits.argmax(-1).numpy()
+            P = idx / (nb - 1) * 2.0 - 1.0
+    else:
+        nf = ck.get('nf', 14)
+        net = DeltaNet(nb=nb, nf=nf); net.load_state_dict(ck['model'])
+        prior = np.bincount(to_bin(Y[M == 1], nb), minlength=nb).astype(np.float64)
+        _, P = ar_eval(net, F, Y, M, nb, sample=True, guard=True,
+                       prior=prior, alpha=a.alpha, scale=a.scale)
 
     # 逐窗取前半段，最后一窗取全部
     newx = {}
