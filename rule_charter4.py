@@ -15,7 +15,7 @@ from phira_fetch import rpe_time_to_beat
 NB = 81
 HALF = 675.0
 SEG = 24
-SAME_CELL_P = 0.34      # 原地同列概率（真谱这首 19.3%，单音口径需更高）
+SAME_CELL_P = 0.28      # 原地同列概率（真谱这首 19.3%，单音口径需更高）
 FLIP_P = 0.53           # 单步换向概率（稳态交替≈此值，真谱 0.53）
 GAP_CHOICES = [5, 5, 5, 4, 6]
 NCOL_CHOICES = [13, 13, 13, 12, 14]
@@ -86,8 +86,8 @@ def main():
 
     for seg in segs:
         # 段内选一对对称锚列供多押配对；单音走位移状态机游走
-        aw = np.array([1.0] * (h + 1))
-        al = wchoice(rng, list(range(h + 1)), aw)
+        aw = np.array([1.0] * h)
+        al = wchoice(rng, list(range(h)), aw)
         ar = ncol - 1 - al
         i = h
         dirn = 1
@@ -108,18 +108,26 @@ def main():
                     elif nc > ncol - 1:
                         nc = 2 * (ncol - 1) - nc; dirn = -1
                     c = int(np.clip(nc, 0, ncol - 1))
+                    if c == h and rng.random() < 0.6:
+                        c = int(np.clip(h + rng.choice([-1, 1]), 0, ncol - 1))
                 i = c
                 pos = [c]
             elif k == 2:
                 pos = [al, ar]; i = ar
             elif k == 3:
-                pos = [al, h, ar]; i = h
+                mid = int(np.clip(h + rng.choice([-1, 0, 0, 1]), 0, ncol - 1))
+                pos = [al, mid, ar]; i = h
             else:
-                pos = [int(round(v)) for v in np.linspace(al, ar, k)]; i = h
+                if rng.random() < 0.6 or h < 2:
+                    pos = [al, al, ar, ar]
+                else:
+                    am = wchoice(rng, list(range(1, h)), [1.0] * (h - 1))
+                    pos = [al, am, ncol - 1 - am, ar]
+                pos = pos[:k]; i = h
             seen, clean = set(), []
             for p in pos:
                 p = int(np.clip(p, 0, ncol - 1))
-                if p in seen:
+                if k == 1 and p in seen:
                     p = int(np.clip(p + 1, 0, ncol - 1))
                 seen.add(p); clean.append(p)
             for kk, r in enumerate(items):
