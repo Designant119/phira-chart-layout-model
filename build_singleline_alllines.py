@@ -37,6 +37,27 @@ def dens_counts(t, win=4.0):
     return (e - s).astype(np.float32)
 
 
+def chord_group(x, t):
+    """同拍分组：返回每颗音的组内左右序号(-1..1)、组跨度、到同伴平均距离。"""
+    n = len(x)
+    rank = np.zeros(n, np.float32)
+    span = np.zeros(n, np.float32)
+    meand = np.zeros(n, np.float32)
+    uq, inv = np.unique(t, return_inverse=True)
+    for g in range(len(uq)):
+        idx = np.where(inv == g)[0]
+        if len(idx) == 1:
+            continue
+        xs = x[idx]
+        o = np.argsort(xs)
+        ranks = np.linspace(-1.0, 1.0, len(idx))
+        for pos, ii in enumerate(o):
+            rank[idx[ii]] = ranks[pos]
+        span[idx] = xs.max() - xs.min()
+        meand[idx] = float(np.mean(np.abs(xs[:, None] - xs[None, :])))
+    return rank, span, meand
+
+
 ap = argparse.ArgumentParser()
 ap.add_argument('--roots', required=True)
 ap.add_argument('--split', required=True)
@@ -98,11 +119,12 @@ for fid, x, t, ty, dur, ln, raw_n in rows:
     n = len(x)
     chord = chord_counts(t)
     dens = dens_counts(t, 4.0)
+    crank, cspan, cmeand = chord_group(x, t)
     for s in range(0, max(1, n - W + 1), STRIDE):
         e = min(n, s + W)
         m = np.zeros(W, np.float32)
         m[:e - s] = 1
-        f = np.zeros((W, 14), np.float32)
+        f = np.zeros((W, 17), np.float32)
         y = np.zeros(W, np.float32)
         y[:e - s] = x[s:e]
         l = np.zeros(W, np.int16)
@@ -123,7 +145,8 @@ for fid, x, t, ty, dur, ln, raw_n in rows:
                 run = 1 if lc else run + 1
             f[k] = [np.log1p(dt), *(ty[i] == np.arange(1, 5)), np.log1p(max(0.0, dur[i])),
                     np.log1p(chord[i]), np.log1p(dens[i]), prev, prev2, prev - prev2,
-                    lc, lgap, np.log1p(run)]
+                    lc, lgap, np.log1p(run),
+                    crank[i], np.log1p(cspan[i] * X_SCALE), np.log1p(cmeand[i] * X_SCALE)]
             prev2 = prev
             prev = x[i]
         F.append(f)

@@ -33,6 +33,17 @@ def dens_counts(t, win=4.0):
     return (e - s).astype(np.float32)
 
 
+def chord_rank(t):
+    """同拍组内按顺序给序号 -1..1；同伴位置在推理时未知，跨度/距离填 0。"""
+    n = len(t); rank = np.zeros(n, np.float32)
+    uq, inv = np.unique(t, return_inverse=True)
+    for g in range(len(uq)):
+        idx = np.where(inv == g)[0]
+        if len(idx) > 1:
+            rank[idx] = np.linspace(-1.0, 1.0, len(idx))
+    return rank
+
+
 def norm_deg(v):
     return ((float(v) + 180.0) % 360.0) - 180.0
 
@@ -62,7 +73,7 @@ def collect(chart):
     return rec
 
 
-def build_feats(rec):
+def build_feats(rec, nf=14):
     x = np.array([r['x'] for r in rec], np.float32) / XS
     t = np.array([r['t'] for r in rec], np.float32)
     ty = np.array([r['type'] for r in rec], np.int32)
@@ -70,11 +81,12 @@ def build_feats(rec):
     ln = np.array([r['li'] for r in rec], np.int16)
     chord = chord_counts(t)
     dens = dens_counts(t, 4.0)
+    crank = chord_rank(t)
     n = len(x)
     F, IDX = [], []
     for s in range(0, max(1, n - W + 1), STRIDE):
         e = min(n, s + W)
-        f = np.zeros((W, 14), np.float32)
+        f = np.zeros((W, nf), np.float32)
         prev = prev2 = 0.0
         run = 0
         for k in range(W):
@@ -88,9 +100,10 @@ def build_feats(rec):
                 lc = 0.0 if int(ln[i]) == int(ln[i - 1]) else 1.0
                 lgap = np.log1p(abs(int(ln[i]) - int(ln[i - 1]) / 10.0)) if lc else 0.0
                 run = 1 if lc else run + 1
-            f[k] = [np.log1p(dt), *(ty[i] == np.arange(1, 5)), np.log1p(max(0.0, dur[i])),
+            feat = [np.log1p(dt), *(ty[i] == np.arange(1, 5)), np.log1p(max(0.0, dur[i])),
                     np.log1p(chord[i]), np.log1p(dens[i]), prev, prev2, prev - prev2,
-                    lc, lgap, np.log1p(run)]
+                    lc, lgap, np.log1p(run), crank[i], 0.0, 0.0]
+            f[k] = feat[:nf]
             prev2 = prev
             prev = x[i]
         F.append(f)
@@ -123,10 +136,11 @@ def main():
     if len(keep) < 16:
         print('音太少，退出'); return
 
-    F, IDX, n = build_feats(keep)
     ck = torch.load(a.model, map_location='cpu')
     nb = ck.get('bins', 81)
-    net = DeltaNet(nb=nb); net.load_state_dict(ck['model'])
+    nf = ck.get('nf', 14)
+    F, IDX, n = build_feats(keep, nf=nf)
+    net = DeltaNet(nb=nb, nf=nf); net.load_state_dict(ck['model'])
 
     Y = np.zeros((len(F), W), np.float32); M = np.zeros_like(Y)
     for wi, (s, e) in enumerate(IDX):

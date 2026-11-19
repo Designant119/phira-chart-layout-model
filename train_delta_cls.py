@@ -118,7 +118,7 @@ def main():
     tr_idx = rng.choice(tr_idx, size=min(a.max_train, len(tr_idx)), replace=False)
     print('windows', len(F), 'train', len(tr_idx), 'val', int(va.sum()), 'test', int(te.sum()), 'bins', NB, flush=True)
 
-    net = DeltaNet(nb=NB)
+    net = DeltaNet(nb=NB, nf=F.shape[-1])
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-5)
     tmask = torch.triu(torch.full((128, 128), float('-inf')), diagonal=1)
     ce = nn.CrossEntropyLoss(reduction='none')
@@ -142,9 +142,10 @@ def main():
         vmae, _ = ar_eval(net, F[va], Y[va], M[va], NB)
         tmae, _ = ar_eval(net, F[te], Y[te], M[te], NB)
         tag = ''
+        torch.save({'model': net.state_dict(), 'bins': NB, 'nf': F.shape[-1]}, a.out + '_last.pt')
         if vmae < best:
             best = vmae
-            torch.save({'model': net.state_dict(), 'bins': NB}, a.out)
+            torch.save({'model': net.state_dict(), 'bins': NB, 'nf': F.shape[-1]}, a.out)
             tag = ' *saved'
         print('epoch %d loss %.4f val_AR_MAE %.1fpx test_AR_MAE %.1fpx %ds%s' % (
             ep + 1, tot / n, vmae, tmae, time.time() - t0, tag), flush=True)
