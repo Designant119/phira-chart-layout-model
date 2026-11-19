@@ -22,11 +22,9 @@ class SongNet(nn.Module):
                             bidirectional=True, dropout=.1)
         self.out = nn.Linear(2 * hidden, nb)
 
-    def forward(self, f, lens):
+    def forward(self, f, lens=None):
         h = self.inp(f)
-        h = nn.utils.rnn.pack_padded_sequence(h, lens, batch_first=True, enforce_sorted=False)
         h, _ = self.lstm(h)
-        h, _ = nn.utils.rnn.pad_packed_sequence(h, batch_first=True)
         return self.out(h)
 
 
@@ -46,8 +44,7 @@ def bucket_batches(lengths, split_idx, max_tokens=2048, max_batch=8, seed=0):
     return batches
 
 
-def load_batch(data, batch_idx, maxlen):
-    offs = data['offs']; F = data['F']; Y = data['Y']
+def load_batch(F, Y, offs, batch_idx, maxlen):
     Lmax = min(maxlen, max(offs[i + 1] - offs[i] for i in batch_idx))
     B = len(batch_idx)
     f = np.zeros((B, Lmax, F.shape[1]), np.float32)
@@ -65,12 +62,12 @@ def load_batch(data, batch_idx, maxlen):
             torch.from_numpy(lens))
 
 
-def eval_net(net, data, idx, maxlen, device, bs=4):
+def eval_net(net, F, Y, offs, idx, maxlen, device, bs=4):
     net.eval(); gok = tot = 0; mae = []
     with torch.no_grad():
         for k in range(0, len(idx), bs):
             bi = idx[k:k + bs]
-            f, y, m, lens = load_batch(data, bi, maxlen)
+            f, y, m, lens = load_batch(F, Y, offs, bi, maxlen)
             lg = net(f.to(device), lens.to(device))
             pred = lg.argmax(-1).cpu().numpy()
             yv = y.numpy(); mv = m.numpy()
@@ -98,7 +95,9 @@ def main():
     device = 'cpu'
     torch.set_num_threads(2)
     data = np.load(a.data, allow_pickle=True)
+    F = data['F']; Y = data['Y']; offs = data['offs']
     lengths = data['lengths']; split = data['split']
+    del data
     tr = np.where(split == 0)[0]; va = np.where(split == 1)[0]; te = np.where(split == 2)[0]
     if a.max_train:
         rng0 = np.random.default_rng(0)
@@ -106,7 +105,7 @@ def main():
     print('train %d val %d test %d 中位长度 %d' % (len(tr), len(va), len(te),
           int(np.median(lengths))), flush=True)
 
-    net = SongNet(nf=data['F'].shape[1], hidden=a.hidden, layers=a.layers)
+    net = SongNet(nf=F.shape[1], hidden=a.hidden, layers=a.layers)
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-5)
     ce = nn.CrossEntropyLoss(reduction='none')
     best = 1e9
@@ -117,7 +116,7 @@ def main():
         batches = bucket_batches(lengths, tr, a.max_tokens, a.max_batch, seed=ep)
         tot_loss = tot_n = 0; t_ep = time.time()
         for bi_i, bi in enumerate(batches):
-            f, y, m, lens = load_batch(data, bi, a.maxlen)
+            f, y, m, lens = load_batch(F, Y, offs, bi, a.maxlen)
             f, y, m, lens = f.to(device), y.to(device), m.to(device), lens.to(device)
             opt.zero_grad()
             lg = net(f, lens)
@@ -127,20 +126,20 @@ def main():
             if bi_i % 50 == 0:
                 print('  batch %d/%d  %.0fs  loss %.3f' % (bi_i, len(batches),
                       time.time() - t_ep, float(loss)), flush=True)
-        vacc, vmae = eval_net(net, data, va, a.maxlen, device)
-        tacc, tmae = eval_net(net, data, te, a.maxlen, device)
+        vacc, vmae = eval_net(net, F, Y, offs, va, a.maxlen, device)
+        tacc, tmae = eval_net(net, F, Y, offs, te, a.maxlen, device)
         torch.save({'model': net.state_dict(), 'epoch': ep + 1, 'val': vmae}, rpath)
         tag = ''
         if vmae < best:
             best = vmae
-            torch.save({'model': net.state_dict(), 'nf': data['F'].shape[1],
+            torch.save({'model': net.state_dict(), 'nf': F.shape[1],
                         'hidden': a.hidden, 'layers': a.layers}, a.out)
             tag = ' *saved'
         print('ep%d ce %.4f | val acc %.1f%% MAE %.1fpx | test acc %.1f%% MAE %.1fpx | %ds%s' % (
             ep + 1, tot_loss / tot_n, 100 * vacc, vmae, 100 * tacc, tmae,
             time.time() - t0, tag), flush=True)
 
-    base = float(np.mean(np.abs(data['Y'])) * 675)
+    base = float(np.mean(np.abs(Y)) * 675)
     print('baseline(全猜0) %.1fpx' % base, flush=True)
 
 
