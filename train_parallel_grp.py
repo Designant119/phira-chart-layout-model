@@ -47,6 +47,38 @@ def var_loss(px, py, m):
     return torch.nn.functional.mse_loss(masked_var(px, m), masked_var(py, m))
 
 
+def _adj(m):
+    return m[:, 1:] * m[:, :-1]
+
+
+def step_loss(px, py, m):
+    """相邻步长的均值与方差对齐真谱，逼模型把步子迈开。"""
+    am = _adj(m)
+    dx = torch.abs(px[:, 1:] - px[:, :-1])
+    dy = torch.abs(py[:, 1:] - py[:, :-1])
+    w = am.sum(1, keepdim=True).clamp(min=1)
+    mx = (dx * am).sum(1, keepdim=True) / w
+    my = (dy * am).sum(1, keepdim=True) / w
+    mean_term = torch.nn.functional.mse_loss(mx.squeeze(1), my.squeeze(1))
+    vx = (((dx - mx) ** 2) * am).sum(1) / w.squeeze(1).clamp(min=1)
+    vy = (((dy - my) ** 2) * am).sum(1) / w.squeeze(1).clamp(min=1)
+    return mean_term + torch.nn.functional.mse_loss(vx, vy)
+
+
+def alt_loss(px, py, m):
+    """相邻方向反转率对齐真谱（软符号近似）。"""
+    am = _adj(m)
+    sx = torch.tanh((px[:, 1:] - px[:, :-1]) * 10)
+    sy = torch.tanh((py[:, 1:] - py[:, :-1]) * 10)
+    ax = sx[:, 1:] * sx[:, :-1]
+    ay = sy[:, 1:] * sy[:, :-1]
+    am2 = am[:, 1:] * am[:, :-1]
+    w = am2.sum(1, keepdim=True).clamp(min=1)
+    mx = (ax * am2).sum(1, keepdim=True) / w
+    my = (ay * am2).sum(1, keepdim=True) / w
+    return torch.nn.functional.mse_loss(mx.squeeze(1), my.squeeze(1))
+
+
 def group_gap_loss(px, g, m, gap=0.10):
     """同拍组内相邻位置间距小于 gap 的部分罚回来。"""
     B, L = px.shape
@@ -87,6 +119,8 @@ def main():
     ap.add_argument('--gap', type=float, default=0.10)
     ap.add_argument('--wgap', type=float, default=0.5)
     ap.add_argument('--wvar', type=float, default=0.3)
+    ap.add_argument('--wstep', type=float, default=0.3)
+    ap.add_argument('--walt', type=float, default=0.3)
     ap.add_argument('--resume', default='')
     a = ap.parse_args()
 
@@ -131,7 +165,7 @@ def main():
                            torch.from_numpy(Y[tr_idx]), torch.from_numpy(M[tr_idx]),
                            torch.from_numpy(G[tr_idx])),
             batch_size=a.bs, shuffle=True, drop_last=True)
-        tot = tot_g = tot_v = n = 0
+        tot = tot_g = tot_v = tot_s = tot_a = n = 0
         for f, yb, py, m, g in dl:
             opt.zero_grad()
             logits = net(f)
@@ -139,12 +173,16 @@ def main():
             px = expected_x(logits, NB)
             gap_loss = group_gap_loss(px, g, m, gap=a.gap)
             v_loss = var_loss(px, py, m)
-            loss = ce_loss + a.wgap * gap_loss + a.wvar * v_loss
+            s_loss = step_loss(px, py, m)
+            a_loss = alt_loss(px, py, m)
+            loss = ce_loss + a.wgap * gap_loss + a.wvar * v_loss + a.wstep * s_loss + a.walt * a_loss
             loss.backward()
             opt.step()
             tot += float(ce_loss) * len(f)
             tot_g += float(gap_loss) * len(f)
             tot_v += float(v_loss) * len(f)
+            tot_s += float(s_loss) * len(f)
+            tot_a += float(a_loss) * len(f)
             n += len(f)
         vmae, _ = parallel_eval(net, F[va], Y[va], M[va], NB)
         tmae, _ = parallel_eval(net, F[te], Y[te], M[te], NB)
@@ -155,8 +193,8 @@ def main():
             best = vmae
             torch.save({'model': net.state_dict(), 'bins': NB, 'feat': F.shape[-1], 'KEEP': KEEP}, a.out)
             tag = ' *saved'
-        print('epoch %d ce %.4f gap %.4f var %.4f val_MAE %.1fpx test_MAE %.1fpx %ds%s' % (
-            ep + 1, tot / n, tot_g / n, tot_v / n, vmae, tmae, time.time() - t0, tag), flush=True)
+        print('epoch %d ce %.4f gap %.4f var %.4f step %.4f alt %.4f val_MAE %.1fpx test_MAE %.1fpx %ds%s' % (
+            ep + 1, tot / n, tot_g / n, tot_v / n, tot_s / n, tot_a / n, vmae, tmae, time.time() - t0, tag), flush=True)
 
     base = float(np.mean(np.abs(Y[M.astype(bool)]) * 675))
     print('baseline(全猜0) %.1fpx' % base, flush=True)
