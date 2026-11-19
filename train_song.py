@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""整曲模型：一首歌一条完整序列喂进 self-attention，全曲上下文预测每音位置。
-不切窗口；按长度分桶组 batch，动态 padding。损失 = 位置分类 CE（mask 掉 padding）。
-数据：song_data.npz（扁平 F/Y + offs/lengths/split）。"""
-import os, json, time, argparse, math
+"""整曲序列模型（双向 LSTM）：一首歌一条完整序列喂进去，全曲双向上下文逐音出位置分类。
+不切窗口；按长度分桶组 batch，动态 padding。CPU 上 LSTM 是 O(L)，比 self-attention 快。
+数据：song_data_clean.npz（扁平 F/Y + offs/lengths/split）。"""
+import os, json, time, argparse
 import numpy as np, torch, torch.nn as nn
 
 NB = 81
@@ -14,25 +14,23 @@ def to_bin(y):
 
 
 class SongNet(nn.Module):
-    def __init__(self, nf=11, nb=NB, d=64, layers=2, heads=4, maxlen=1536):
+    def __init__(self, nf, hidden=96, layers=2, nb=NB):
         super().__init__()
-        self.inp = nn.Linear(nf, d)
-        self.pos = nn.Embedding(maxlen, d)
-        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=.1,
-                                           batch_first=True, activation='gelu',
-                                           norm_first=True)
-        self.enc = nn.TransformerEncoder(layer, layers)
-        self.out = nn.Linear(d, nb)
+        self.nb = nb
+        self.inp = nn.Linear(nf, hidden)
+        self.lstm = nn.LSTM(hidden, hidden, layers, batch_first=True,
+                            bidirectional=True, dropout=.1)
+        self.out = nn.Linear(2 * hidden, nb)
 
-    def forward(self, f, pad_mask):
-        B, L, _ = f.shape
-        h = self.inp(f) + self.pos.weight[:L].unsqueeze(0)
-        h = self.enc(h, src_key_padding_mask=~pad_mask)
+    def forward(self, f, lens):
+        h = self.inp(f)
+        h = nn.utils.rnn.pack_padded_sequence(h, lens, batch_first=True, enforce_sorted=False)
+        h, _ = self.lstm(h)
+        h, _ = nn.utils.rnn.pad_packed_sequence(h, batch_first=True)
         return self.out(h)
 
 
 def bucket_batches(lengths, split_idx, max_tokens=2048, max_batch=8, seed=0):
-    """按长度排序分桶，返回 batch 内谱号列表。"""
     idx = list(split_idx)
     idx.sort(key=lambda i: lengths[i])
     batches, cur, cur_len = [], [], 0
@@ -55,13 +53,16 @@ def load_batch(data, batch_idx, maxlen):
     f = np.zeros((B, Lmax, F.shape[1]), np.float32)
     y = np.zeros((B, Lmax), np.int64)
     mask = np.zeros((B, Lmax), bool)
+    lens = np.zeros(B, np.int64)
     for b, i in enumerate(batch_idx):
         s, e = offs[i], offs[i + 1]
         n = min(e - s, Lmax)
         f[b, :n] = F[s:s + n]
         y[b, :n] = to_bin(Y[s:s + n])
         mask[b, :n] = True
-    return torch.from_numpy(f), torch.from_numpy(y), torch.from_numpy(mask)
+        lens[b] = n
+    return (torch.from_numpy(f), torch.from_numpy(y), torch.from_numpy(mask),
+            torch.from_numpy(lens))
 
 
 def eval_net(net, data, idx, maxlen, device, bs=4):
@@ -69,8 +70,8 @@ def eval_net(net, data, idx, maxlen, device, bs=4):
     with torch.no_grad():
         for k in range(0, len(idx), bs):
             bi = idx[k:k + bs]
-            f, y, m = load_batch(data, bi, maxlen)
-            lg = net(f.to(device), m.to(device))
+            f, y, m, lens = load_batch(data, bi, maxlen)
+            lg = net(f.to(device), lens.to(device))
             pred = lg.argmax(-1).cpu().numpy()
             yv = y.numpy(); mv = m.numpy()
             gok += (pred[mv] == yv[mv]).sum(); tot += mv.sum()
@@ -84,12 +85,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--data', required=True)
     ap.add_argument('--out', required=True)
-    ap.add_argument('--epochs', type=int, default=12)
+    ap.add_argument('--epochs', type=int, default=24)
     ap.add_argument('--lr', type=float, default=5e-4)
     ap.add_argument('--maxlen', type=int, default=1536)
     ap.add_argument('--max-tokens', type=int, default=2048)
     ap.add_argument('--max-batch', type=int, default=8)
-    ap.add_argument('--d', type=int, default=64)
+    ap.add_argument('--hidden', type=int, default=96)
     ap.add_argument('--layers', type=int, default=2)
     ap.add_argument('--max-train', type=int, default=0)
     a = ap.parse_args()
@@ -105,7 +106,7 @@ def main():
     print('train %d val %d test %d 中位长度 %d' % (len(tr), len(va), len(te),
           int(np.median(lengths))), flush=True)
 
-    net = SongNet(nf=data['F'].shape[1], d=a.d, layers=a.layers, maxlen=a.maxlen)
+    net = SongNet(nf=data['F'].shape[1], hidden=a.hidden, layers=a.layers)
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-5)
     ce = nn.CrossEntropyLoss(reduction='none')
     best = 1e9
@@ -116,13 +117,13 @@ def main():
         batches = bucket_batches(lengths, tr, a.max_tokens, a.max_batch, seed=ep)
         tot_loss = tot_n = 0; t_ep = time.time()
         for bi_i, bi in enumerate(batches):
-            f, y, m = load_batch(data, bi, a.maxlen)
-            f, y, m = f.to(device), y.to(device), m.to(device)
+            f, y, m, lens = load_batch(data, bi, a.maxlen)
+            f, y, m, lens = f.to(device), y.to(device), m.to(device), lens.to(device)
             opt.zero_grad()
-            lg = net(f, m)
+            lg = net(f, lens)
             loss = (ce(lg.reshape(-1, NB), y.reshape(-1)).reshape(y.shape) * m).sum() / m.sum()
             loss.backward(); opt.step()
-            tot_loss += float(loss) * m.sum(); tot_n += int(m.sum())
+            tot_loss += float(loss.detach()) * int(m.sum()); tot_n += int(m.sum())
             if bi_i % 50 == 0:
                 print('  batch %d/%d  %.0fs  loss %.3f' % (bi_i, len(batches),
                       time.time() - t_ep, float(loss)), flush=True)
@@ -133,13 +134,13 @@ def main():
         if vmae < best:
             best = vmae
             torch.save({'model': net.state_dict(), 'nf': data['F'].shape[1],
-                        'maxlen': a.maxlen, 'd': a.d, 'layers': a.layers}, a.out)
+                        'hidden': a.hidden, 'layers': a.layers}, a.out)
             tag = ' *saved'
         print('ep%d ce %.4f | val acc %.1f%% MAE %.1fpx | test acc %.1f%% MAE %.1fpx | %ds%s' % (
             ep + 1, tot_loss / tot_n, 100 * vacc, vmae, 100 * tacc, tmae,
             time.time() - t0, tag), flush=True)
 
-    base = float(np.mean(np.abs(data['Y'][data['split'] == 0])) * 675)
+    base = float(np.mean(np.abs(data['Y'])) * 675)
     print('baseline(全猜0) %.1fpx' % base, flush=True)
 
 
