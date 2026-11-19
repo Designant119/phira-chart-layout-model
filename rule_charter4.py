@@ -15,7 +15,7 @@ from phira_fetch import rpe_time_to_beat
 NB = 81
 HALF = 675.0
 SEG = 24
-SAME_CELL_P = 0.28      # 原地同列概率（真谱这首 19.3%，单音口径需更高）
+SAME_CELL_P = 0.34      # 原地同列概率（真谱这首 19.3%，单音口径需更高）
 FLIP_P = 0.53           # 单步换向概率（稳态交替≈此值，真谱 0.53）
 GAP_CHOICES = [5, 5, 5, 4, 6]
 NCOL_CHOICES = [13, 13, 13, 12, 14]
