@@ -37,6 +37,12 @@ def col_weights(ncol):
     return np.array(w, dtype=np.float64)
 
 
+def wchoice(rng, idx, w):
+    w = np.array(w, dtype=np.float64)
+    w = w / w.sum()
+    return idx[int(np.searchsorted(w.cumsum(), rng.random()))]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--chart', required=True)
@@ -72,33 +78,29 @@ def main():
     gap = rng.choice(GAP_CHOICES)
     ncol = rng.choice(NCOL_CHOICES)
     cols = build_grid(gap, ncol, center)
-    i = ncol // 2
-    dirn = 1
+    half = (ncol - 1) / 2.0
+    h = int(round(half))
 
     for seg in segs:
-        if rng.random() < SWAP_P:
-            gap = rng.choice(GAP_CHOICES)
-            ncol = rng.choice(NCOL_CHOICES)
-            span = (ncol - 1) * gap
-            if span > 64:
-                ncol = max(4, int(64 / gap) + 1)
-            cols = build_grid(gap, ncol, center)
-            i = ncol // 2
-        w = col_weights(ncol)
-        half = (ncol - 1) / 2.0
+        # 段内选一对对称锚列，单音集中在锚列邻域反复，段间换锚铺开
+        aw = np.array([1.0 / (1.0 + abs(i - 3.2) * 0.35) for i in range(h + 1)])
+        al = wchoice(rng, list(range(h + 1)), aw)
+        ar = ncol - 1 - al
+        pool = sorted(set([max(0, al - 1), al, min(ncol - 1, al + 1),
+                           max(0, ar - 1), ar, min(ncol - 1, ar + 1), h]))
+        pw = [2.0 if p in (al, ar) else 0.6 for p in pool]
 
-        for b in seg:
-            items = groups[b]
+        for bt in seg:
+            items = groups[bt]
             k = len(items)
             if k == 1:
-                pos = [i]
+                pos = [wchoice(rng, pool, pw)]
             elif k == 2:
-                pos = [i, ncol - 1 - i]
+                pos = [al, ar]
             elif k == 3:
-                pos = [i, int(round(half)), ncol - 1 - i]
+                pos = [al, h, ar]
             else:
-                lo, hi = min(i, ncol - 1 - i), max(i, ncol - 1 - i)
-                pos = [int(round(v)) for v in np.linspace(lo, hi, k)]
+                pos = [int(round(v)) for v in np.linspace(al, ar, k)]
             seen, clean = set(), []
             for p in pos:
                 p = int(np.clip(p, 0, ncol - 1))
@@ -108,19 +110,6 @@ def main():
             for kk, r in enumerate(items):
                 c = clean[kk] if kk < len(clean) else clean[-1]
                 r['out'] = g2x(cols[c])
-
-            if k == 1:
-                if rng.random() < SAME_CELL_P:
-                    step = 0
-                else:
-                    step = rng.choice([3, 4, 4, 5, 5, 6])
-                if rng.random() < FLIP_P:
-                    dirn = -dirn
-                ni_ = i + dirn * step
-                if ni_ < 0 or ni_ > ncol - 1:
-                    dirn = -dirn
-                    ni_ = int(np.clip(i + dirn * step, 0, ncol - 1))
-                i = ni_
 
     for r in notes:
         d['judgeLineList'][r['li']]['notes'][r['ni']]['positionX'] = round(
