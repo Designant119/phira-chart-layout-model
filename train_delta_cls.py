@@ -32,11 +32,20 @@ def bin_to_delta(idx, nb):
     return idx / (nb - 1) * 2.0 - 1.0
 
 
-def ar_eval(net, F, Y, M, nb, sample=False, seed=0):
-    """自回归：整窗只有第一颗给真值，其余全靠自己推出来的位移累加。"""
+def ar_eval(net, F, Y, M, nb, sample=False, seed=0, guard=False, prior=None, alpha=0.0, scale=1.0):
+    """自回归：整窗只有第一颗给真值，其余全靠自己推出来的位移累加。
+    guard=True 加边界物理约束：贴近边缘不准再往外走（手跑到轨道头必须掉头）。
+    prior: 81 维真谱位置分布（概率），alpha 控制往真谱常用区域收的力度。
+    scale: 位移幅度缩放，<1 收得更紧。"""
     net.eval()
     rng = np.random.default_rng(seed)
     preds = []
+    edges = bin_to_delta(np.arange(nb), nb)
+    lp = None
+    if prior is not None and alpha > 0:
+        pr = np.asarray(prior, dtype=np.float64)
+        pr = pr / max(pr.sum(), 1e-12)
+        lp = torch.from_numpy(np.log(np.clip(pr, 1e-8, None))).float()
     with torch.no_grad():
         for i in range(0, len(F), 128):
             f = torch.from_numpy(F[i:i + 128].astype(np.float32).copy())
@@ -44,13 +53,24 @@ def ar_eval(net, F, Y, M, nb, sample=False, seed=0):
             x = torch.zeros(b, n)
             for k in range(n):
                 logits = net(f)[:, k]
+                if lp is not None:
+                    base = torch.clamp((x[:, k - 1] if k >= 1 else torch.zeros(b))[:, None] + edges[None, :], -1, 1)
+                    bq = torch.clamp(torch.round((base + 1) / 2 * (nb - 1)), 0, nb - 1).long()
+                    logits = logits + alpha * lp[bq]
+                if guard and k >= 1:
+                    cur = x[:, k - 1].numpy()
+                    nxt = cur[:, None] + edges[None, :] * scale
+                    bad = (nxt > 1.03) | (nxt < -1.03)
+                    allbad = bad.all(axis=1, keepdims=True)
+                    bad = bad & (~allbad)
+                    logits = logits.masked_fill(torch.from_numpy(bad), -30.0)
                 if sample:
-                    p = torch.softmax(logits, -1).numpy()
-                    idx = np.array([rng.choice(nb, p=p[j] / p[j].sum()) for j in range(b)])
-                    idx = torch.from_numpy(idx)
+                    p = torch.softmax(logits.reshape(-1, nb), -1).numpy()
+                    p = p / np.clip(p.sum(axis=1, keepdims=True), 1e-12, None)
+                    idx = torch.from_numpy(np.array([rng.choice(nb, p=p[j]) for j in range(p.shape[0])]))
                 else:
                     idx = logits.argmax(-1)
-                d = bin_to_delta(idx.numpy(), nb)
+                d = bin_to_delta(idx.numpy(), nb) * scale
                 x[:, k] = torch.clamp((x[:, k - 1] if k >= 1 else 0.0) + torch.from_numpy(d).float(), -1.0, 1.0)
                 if k >= 1:
                     f[:, k, 8] = x[:, k - 1]

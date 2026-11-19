@@ -56,6 +56,10 @@ def main():
     ap.add_argument("--ids", default="")
     ap.add_argument("--out", default="handfeel_compare.png")
     ap.add_argument("--arch", default="reg")
+    ap.add_argument("--guard", type=int, default=0)
+    ap.add_argument("--sample", type=int, default=0)
+    ap.add_argument("--alpha", type=float, default=0.0)
+    ap.add_argument("--scale", type=float, default=1.0)
     a = ap.parse_args()
 
     d = np.load(a.data, allow_pickle=True)
@@ -90,7 +94,10 @@ def main():
                 rows.append(int(idx[len(idx) // 2]))
 
     if a.arch == "delta":
-        pred = delta_ar(net, F[rows], Y[rows], M[rows], net.nb)[1]
+        from train_parallel_cls import to_bin
+        trm = np.ones(len(fid), bool)
+        prior = np.bincount(to_bin(Y[trm], net.nb).ravel(), minlength=net.nb).astype(np.float64)
+        pred = delta_ar(net, F[rows], Y[rows], M[rows], net.nb, sample=bool(a.sample), guard=bool(a.guard), prior=prior, alpha=a.alpha, scale=a.scale)[1]
     elif a.arch == "parallel":
         Fp = np.concatenate([F[rows][:, :, :8], F[rows][:, :, 11:]], axis=-1)
         pred = parallel_eval(net, Fp, Y[rows], M[rows], net.nb)[1]
