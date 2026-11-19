@@ -36,6 +36,17 @@ def expected_x(logits, nb):
     return (prob * grid).sum(-1) / (nb - 1) * 2.0 - 1.0
 
 
+def masked_var(x, m):
+    s = m.sum(1, keepdim=True).clamp(min=1)
+    mean = (x * m).sum(1, keepdim=True) / s
+    return (((x - mean) ** 2) * m).sum(1) / s.squeeze(1).clamp(min=1)
+
+
+def var_loss(px, py, m):
+    """预测位置方差对齐真值，避免全挤中间。"""
+    return torch.nn.functional.mse_loss(masked_var(px, m), masked_var(py, m))
+
+
 def group_gap_loss(px, g, m, gap=0.10):
     """同拍组内相邻位置间距小于 gap 的部分罚回来。"""
     B, L = px.shape
@@ -75,6 +86,7 @@ def main():
     ap.add_argument('--bins', type=int, default=81)
     ap.add_argument('--gap', type=float, default=0.10)
     ap.add_argument('--wgap', type=float, default=0.5)
+    ap.add_argument('--wvar', type=float, default=0.3)
     ap.add_argument('--resume', default='')
     a = ap.parse_args()
 
@@ -116,20 +128,23 @@ def main():
         net.train()
         dl = DataLoader(
             TensorDataset(torch.from_numpy(F[tr_idx]), torch.from_numpy(YB[tr_idx]),
-                           torch.from_numpy(M[tr_idx]), torch.from_numpy(G[tr_idx])),
+                           torch.from_numpy(Y[tr_idx]), torch.from_numpy(M[tr_idx]),
+                           torch.from_numpy(G[tr_idx])),
             batch_size=a.bs, shuffle=True, drop_last=True)
-        tot = tot_g = n = 0
-        for f, yb, m, g in dl:
+        tot = tot_g = tot_v = n = 0
+        for f, yb, py, m, g in dl:
             opt.zero_grad()
             logits = net(f)
             ce_loss = (ce(logits.reshape(-1, NB), yb.reshape(-1)).reshape(yb.shape) * m).sum() / m.sum()
             px = expected_x(logits, NB)
             gap_loss = group_gap_loss(px, g, m, gap=a.gap)
-            loss = ce_loss + a.wgap * gap_loss
+            v_loss = var_loss(px, py, m)
+            loss = ce_loss + a.wgap * gap_loss + a.wvar * v_loss
             loss.backward()
             opt.step()
             tot += float(ce_loss) * len(f)
             tot_g += float(gap_loss) * len(f)
+            tot_v += float(v_loss) * len(f)
             n += len(f)
         vmae, _ = parallel_eval(net, F[va], Y[va], M[va], NB)
         tmae, _ = parallel_eval(net, F[te], Y[te], M[te], NB)
@@ -140,8 +155,8 @@ def main():
             best = vmae
             torch.save({'model': net.state_dict(), 'bins': NB, 'feat': F.shape[-1], 'KEEP': KEEP}, a.out)
             tag = ' *saved'
-        print('epoch %d ce %.4f gap %.4f val_MAE %.1fpx test_MAE %.1fpx %ds%s' % (
-            ep + 1, tot / n, tot_g / n, vmae, tmae, time.time() - t0, tag), flush=True)
+        print('epoch %d ce %.4f gap %.4f var %.4f val_MAE %.1fpx test_MAE %.1fpx %ds%s' % (
+            ep + 1, tot / n, tot_g / n, tot_v / n, vmae, tmae, time.time() - t0, tag), flush=True)
 
     base = float(np.mean(np.abs(Y[M.astype(bool)]) * 675))
     print('baseline(全猜0) %.1fpx' % base, flush=True)
