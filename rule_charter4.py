@@ -126,6 +126,32 @@ def main():
                 c = clean[kk] if kk < len(clean) else clean[-1]
                 r['out'] = g2x(cols[c])
 
+    # hold 重叠避让：时间交叠的长押分居对侧，间距不小于阈值
+    from gen_chart_from_model import collect
+    rec = collect(d)
+    out_map = {(r['li'], r['ni']): r['out'] for r in notes}
+    holds = [r for r in rec if r['type'] == 2 and r['dur'] > 0.1]
+    holds.sort(key=lambda r: r['t'])
+
+    def ov(A, B):
+        return B['t'] < A['t'] + A['dur'] and A['t'] < B['t'] + B['dur']
+
+    MIN_HOLD_GAP = 336.0
+    for i in range(len(holds)):
+        for j in range(i + 1, len(holds)):
+            A, B = holds[i], holds[j]
+            if not ov(A, B):
+                continue
+            x1 = out_map[(A['li'], A['ni'])]
+            x2 = out_map[(B['li'], B['ni'])]
+            if abs(x1 - x2) < MIN_HOLD_GAP:
+                x2 = -x1
+                if abs(x2 - x1) < MIN_HOLD_GAP:
+                    x2 = -np.sign(x1 if x1 != 0 else 1) * 600.0
+                out_map[(B['li'], B['ni'])] = float(np.clip(x2, -HALF, HALF))
+    for r in notes:
+        r['out'] = out_map[(r['li'], r['ni'])]
+
     for r in notes:
         d['judgeLineList'][r['li']]['notes'][r['ni']]['positionX'] = round(
             float(np.clip(r['out'], -HALF, HALF)), 2)
