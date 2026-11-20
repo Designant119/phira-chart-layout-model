@@ -107,6 +107,7 @@ def main():
     step_scale = tgt_px / 338.0
     scp = min(max(0.28 - (0.183 - med_iv) * 0.9, 0.12), 0.30)
     flip_p = min(max(0.53 + (0.183 - med_iv) * 3.0, 0.45), 0.86)
+    chord_follow_p = min(max((0.183 - med_iv) * 4.0, 0.0), 0.8)  # 密集谱多押中心跟随游走
     print(f'# 间隔中位 {med_iv:.3f}s 目标步长 {tgt_px:.0f}px 缩放 {step_scale:.2f} 同列概率 {scp:.2f} 换向 {flip_p:.2f}')
 
     for seg in segs:
@@ -136,18 +137,18 @@ def main():
                 i = c
                 pos = [c]
             elif k == 2:
-                ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                ch = int(np.clip((i if rng.random() < chord_follow_p else h) + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
                 w2 = max(1, int(round(rng.choice([2, 3, 3, 3, 3, 4, 6]) * step_scale)))
                 l = int(np.clip(ch - w2, 0, ncol - 1)); r = int(np.clip(ch + w2, 0, ncol - 1))
                 pos = [l, r]; i = r if dirn > 0 else l
             elif k == 3:
-                ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                ch = int(np.clip((i if rng.random() < chord_follow_p else h) + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
                 w3 = max(2, int(round(rng.choice([4, 4, 5, 5]) * step_scale)))
                 l = int(np.clip(ch - w3, 0, ncol - 1)); r = int(np.clip(ch + w3, 0, ncol - 1))
                 mid = int(np.clip(ch + rng.choice([-1, 0, 0, 1]), 0, ncol - 1))
                 pos = [l, mid, r]; i = h
             else:
-                ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                ch = int(np.clip((i if rng.random() < chord_follow_p else h) + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
                 w4 = max(1, int(round(rng.choice([2, 3, 3, 3, 3, 4, 6]) * step_scale)))
                 l = int(np.clip(ch - w4, 0, ncol - 1)); r = int(np.clip(ch + w4, 0, ncol - 1))
                 if rng.random() < 0.6 or h < 2:
