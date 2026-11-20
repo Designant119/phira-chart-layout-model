@@ -10,13 +10,13 @@ import os, sys, json, argparse, random, math
 from collections import defaultdict
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from phira_fetch import rpe_time_to_beat
+from phira_fetch import rpe_time_to_beat, parse_chart
 
 NB = 81
 HALF = 675.0
 SEG = 24
-SAME_CELL_P = 0.28      # 原地同列概率（真谱这首 19.3%，单音口径需更高）
-FLIP_P = 0.53           # 单步换向概率（稳态交替≈此值，真谱 0.53）
+SAME_CELL_P = 0.28      # 基准：原地同列概率（0.183s 间隔谱面口径，运行时按密度自适应）
+FLIP_P = 0.53           # 基准：单步换向概率（运行时按密度自适应）
 GAP_CHOICES = [5, 5, 5, 4, 6]
 NCOL_CHOICES = [13, 13, 13, 12, 14]
 SWAP_P = 0.0            # 段间换网格概率：整首一套对齐网格
@@ -55,12 +55,27 @@ def main():
 
     rng = random.Random(a.seed)
     d = json.load(open(a.chart, encoding='utf-8'))
+    _, psegs = parse_chart(d)
+
+    def b2s(beat):
+        total = 0.0
+        for i, (sb, bpm) in enumerate(psegs):
+            if i + 1 < len(psegs):
+                nb = psegs[i + 1][0]
+                if beat < nb:
+                    return total + (beat - sb) * 60.0 / bpm
+                total += (nb - sb) * 60.0 / bpm
+            else:
+                return total + (beat - sb) * 60.0 / bpm
+        return beat * 0.5
+
     notes = []
     for li, jl in enumerate(d['judgeLineList']):
         for ni, n in enumerate(jl.get('notes', [])):
             if n.get('isFake', 0) == 1:
                 continue
-            notes.append({'b': round(rpe_time_to_beat(n['startTime']), 4),
+            beat = rpe_time_to_beat(n['startTime'])
+            notes.append({'b': round(beat, 4), 't': b2s(beat),
                           'li': li, 'ni': ni, 'out': 0.0})
     groups = defaultdict(list)
     for r in notes:
@@ -84,6 +99,16 @@ def main():
     half = (ncol - 1) / 2.0
     h = int(round(half))
 
+    # 密度自适应：音越密，位移越小、同列越多（真谱 15831 间隔0.183s→步长338px，15728 间隔0.083s→225px）
+    ts = sorted(set(r['t'] for r in notes))
+    ivs = [ts[i + 1] - ts[i] for i in range(len(ts) - 1)]
+    med_iv = float(np.median(ivs)) if ivs else 0.183
+    tgt_px = min(max(225.0 + 1130.0 * (med_iv - 0.083), 170.0), 400.0)
+    step_scale = tgt_px / 338.0
+    scp = min(max(0.28 - (0.183 - med_iv) * 0.9, 0.12), 0.30)
+    flip_p = min(max(0.53 + (0.183 - med_iv) * 3.0, 0.45), 0.86)
+    print(f'# 间隔中位 {med_iv:.3f}s 目标步长 {tgt_px:.0f}px 缩放 {step_scale:.2f} 同列概率 {scp:.2f} 换向 {flip_p:.2f}')
+
     for seg in segs:
         # 单音走位移状态机游走；多押按押型独立选对称宽度
         i = h
@@ -93,11 +118,12 @@ def main():
             items = groups[bt]
             k = len(items)
             if k == 1:
-                if rng.random() < SAME_CELL_P:
+                if rng.random() < scp:
                     c = i
                 else:
                     step = wchoice(rng, STEP_IDX, STEP_W)
-                    if rng.random() < FLIP_P:
+                    step = max(1, int(round(step * step_scale)))
+                    if rng.random() < flip_p:
                         dirn = -dirn
                     nc = i + dirn * step
                     if nc < 0:
@@ -106,14 +132,14 @@ def main():
                         nc = 2 * (ncol - 1) - nc; dirn = -1
                     c = int(np.clip(nc, 0, ncol - 1))
                     if c == h and rng.random() < 0.6:
-                        c = int(np.clip(h + rng.choice([-1, 1]), 0, ncol - 1))
+                        c = int(np.clip(h + dirn, 0, ncol - 1))
                 i = c
                 pos = [c]
             elif k == 2:
                 ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
                 w2 = rng.choice([2, 3, 3, 3, 3, 4, 6])
                 l = int(np.clip(ch - w2, 0, ncol - 1)); r = int(np.clip(ch + w2, 0, ncol - 1))
-                pos = [l, r]; i = r
+                pos = [l, r]; i = r if dirn > 0 else l
             elif k == 3:
                 ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
                 w3 = rng.choice([4, 4, 5, 5])
@@ -129,7 +155,7 @@ def main():
                 else:
                     am = wchoice(rng, list(range(1, h)), [1.0] * (h - 1))
                     pos = [l, am, ncol - 1 - am, r]
-                pos = pos[:k]; i = h
+                pos = pos[:k]; i = r if dirn > 0 else l
             seen, clean = set(), []
             for p in pos:
                 p = int(np.clip(p, 0, ncol - 1))
