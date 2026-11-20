@@ -137,18 +137,18 @@ def main():
                 pos = [c]
             elif k == 2:
                 ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
-                w2 = rng.choice([2, 3, 3, 3, 3, 4, 6])
+                w2 = max(1, int(round(rng.choice([2, 3, 3, 3, 3, 4, 6]) * step_scale)))
                 l = int(np.clip(ch - w2, 0, ncol - 1)); r = int(np.clip(ch + w2, 0, ncol - 1))
                 pos = [l, r]; i = r if dirn > 0 else l
             elif k == 3:
                 ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
-                w3 = rng.choice([4, 4, 5, 5])
+                w3 = max(2, int(round(rng.choice([4, 4, 5, 5]) * step_scale)))
                 l = int(np.clip(ch - w3, 0, ncol - 1)); r = int(np.clip(ch + w3, 0, ncol - 1))
                 mid = int(np.clip(ch + rng.choice([-1, 0, 0, 1]), 0, ncol - 1))
                 pos = [l, mid, r]; i = h
             else:
                 ch = int(np.clip(h + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
-                w4 = rng.choice([2, 3, 3, 3, 3, 4, 6])
+                w4 = max(1, int(round(rng.choice([2, 3, 3, 3, 3, 4, 6]) * step_scale)))
                 l = int(np.clip(ch - w4, 0, ncol - 1)); r = int(np.clip(ch + w4, 0, ncol - 1))
                 if rng.random() < 0.6 or h < 2:
                     pos = [l, l, r, r]
