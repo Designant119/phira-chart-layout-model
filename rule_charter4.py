@@ -121,9 +121,12 @@ def main():
     # 锚点 稀疏 iv=0.200 / 密集 iv=0.083，全宽中位 → 半宽 px
     td = min(max((0.200 - med_iv) / (0.200 - 0.083), 0.0), 1.0)
     colw = 2 * HALF / (NB - 1)  # 每格 px
-    w2_px = 225.0 - 26.5 * td
-    w3_px = 253.0 + 58.5 * td
-    w4_px = 270.0 + 67.5 * td
+    # 本曲横向尺度：取本曲 tap 的 |x| 中位（真谱里多押半宽基本就等于本曲音符的典型 |x|）
+    tap_xs = [abs(r['x']) for r in notes if r.get('type') == 1 and abs(r.get('x', 0)) > 1]
+    tap_med = float(np.median(tap_xs)) if len(tap_xs) >= 20 else 270.0
+    w2_px = (0.83 - 0.10 * td) * tap_med
+    w3_px = (0.94 + 0.21 * td) * tap_med
+    w4_px = (1.00 + 0.25 * td) * tap_med
     mag_c = tgt_px / colw  # drag 横向尺度的格数：本曲目标步长换算成格，drag 就落在这个量级附近
     print(f'# 间隔中位 {med_iv:.3f}s 目标步长 {tgt_px:.0f}px 缩放 {step_scale:.2f} 同列概率 {scp:.2f} 换向 {flip_p:.2f} 密度档 {td:.2f}')
 
@@ -272,13 +275,16 @@ def main():
                 if rng.random() < 0.6 or h < 2:
                     pos = [l, l, r, r]
                 else:
-                    am = wchoice(rng, list(range(1, h)), [1.0] * (h - 1))
-                    pos = [l, am, ncol - 1 - am, r]
+                    # 真谱另一种四押是"内外两对"（如 -506,-168,168,506），仍是成对同列
+                    inn = int(np.clip(round(w4 * rng.uniform(0.35, 0.95)), 1, max(1, w4)))
+                    li = int(np.clip(ch - inn, 0, ncol - 1)); ri = int(np.clip(ch + inn, 0, ncol - 1))
+                    pos = [li, li, ri, ri]
                 pos = pos[:k]; i = r if dirn > 0 else l
             seen, clean = set(), []
+            allow_dup = (k == 4)  # 真谱四押就是左右各两颗严格同列重合
             for p in pos:
                 p = int(np.clip(p, 0, ncol - 1))
-                if p in seen:
+                if p in seen and not allow_dup:
                     for dd in range(1, ncol):
                         if p - dd >= 0 and p - dd not in seen:
                             p = p - dd; break
