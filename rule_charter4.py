@@ -196,6 +196,27 @@ def main():
     for r in notes:
         d['judgeLineList'][r['li']]['notes'][r['ni']]['positionX'] = round(
             float(np.clip(r['out'], -HALF, HALF)), 2)
+
+    # 判定线全部静止水平：清掉移动/旋转/速度动画与位移控制，不保留原谱线动效
+    static_pos = [{"easing": 1, "pos": 1.0, "x": 0.0}, {"easing": 1, "pos": 1.0, "x": 9999999.0}]
+    static_y = [{"easing": 1, "x": 0.0, "y": 1.0}, {"easing": 1, "x": 9999999.0, "y": 1.0}]
+    static_size = [{"easing": 1, "size": 1.0, "x": 0.0}, {"easing": 1, "size": 1.0, "x": 9999999.0}]
+    static_skew = [{"easing": 1, "skew": 0.0, "x": 0.0}, {"easing": 1, "skew": 0.0, "x": 9999999.0}]
+    def _static_ev(val):
+        return [{"bezier": 0, "bezierPoints": [0, 0, 0, 0], "easingLeft": 0.0,
+                 "easingRight": 1.0, "easingType": 1, "end": val, "endTime": [1, 0, 1],
+                 "linkgroup": 0, "start": val, "startTime": [0, 0, 1]}]
+    static_layer = [{
+        "alphaEvents": _static_ev(255),
+        "moveXEvents": _static_ev(0), "moveYEvents": _static_ev(0),
+        "rotateEvents": _static_ev(0),
+        "speedEvents": _static_ev(10.0)}]
+    for l in d['judgeLineList']:
+        l['eventLayers'] = static_layer
+        l['posControl'] = static_pos
+        l['yControl'] = static_y
+        l['sizeControl'] = static_size
+        l['skewControl'] = static_skew
     json.dump(d, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False)
 
     xs = np.array([r['out'] for r in sorted(notes, key=lambda r: r['b'])])
