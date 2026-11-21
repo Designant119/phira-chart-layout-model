@@ -155,30 +155,41 @@ def main():
             else:
                 bias = rng.choice([-2, -1, 0, 0, 1, 2])
 
+            # drag 扫线推进：每拍都推进（与同拍几颗无关），撞界反弹，步长严格等距
+            runinfo = drag_run.get(bt)
+            sweep_col = None
+            if runinfo and runinfo[2] >= 4:
+                r_id, r_idx, r_len = runinfo
+                if r_id not in run_state:
+                    amp = rng.uniform(14.0, 34.0)
+                    # 步长必须明显小于半幅，否则每拍都撞界反弹，位置会乱跳
+                    stepc = min(rng.uniform(6.0, 20.0), amp * 0.72)
+                    run_state[r_id] = {
+                        'amp': amp,
+                        'step': stepc,
+                        'col': h + rng.uniform(-amp * 0.55, amp * 0.55),
+                        'dirn': rng.choice([-1, 1]),
+                        'last': 0}
+                st = run_state[r_id]
+                adv = r_idx - st['last']
+                for _ in range(max(0, adv)):
+                    st['col'] += st['dirn'] * st['step']
+                    lo, hi = h - st['amp'], h + st['amp']
+                    if st['col'] > hi:
+                        st['col'] = 2 * hi - st['col']; st['dirn'] = -1
+                    elif st['col'] < lo:
+                        st['col'] = 2 * lo - st['col']; st['dirn'] = 1
+                    st['col'] = float(np.clip(st['col'], 0, ncol - 1))
+                st['last'] = r_idx
+                sweep_col = int(np.clip(round(st['col']), 0, ncol - 1))
+                if os.environ.get('DBG_SWEEP'):
+                    print('  run%d idx%d adv%d step%.1f col%.1f->%d amp%.1f' % (
+                        r_id, r_idx, adv, st['step'], st['col'], sweep_col, st['amp']))
+
             if k == 1:
                 is_drag = items[0]['type'] == 3
-                runinfo = drag_run.get(bt)
-                if is_drag and runinfo and runinfo[2] >= 4:
-                    # drag 扫线：同一段内等步长推进，撞到幅度边界反弹（真谱 58% 是这种往复扫）
-                    r_id = runinfo[0]
-                    if r_id not in run_state:
-                        amp = rng.uniform(12.0, 34.0)          # 半幅（格）
-                        run_state[r_id] = {
-                            'amp': amp,
-                            'step': rng.uniform(8.0, 24.0),    # 每拍横向步长（格）
-                            'col': h + rng.uniform(-amp * 0.55, amp * 0.55),
-                            'dirn': rng.choice([-1, 1])}
-                    st = run_state[r_id]
-                    if runinfo[1] > 0:
-                        st['col'] += st['dirn'] * st['step']
-                        lo, hi = h - st['amp'], h + st['amp']
-                        if st['col'] > hi:
-                            st['col'] = 2 * hi - st['col']; st['dirn'] = -1
-                        elif st['col'] < lo:
-                            st['col'] = 2 * lo - st['col']; st['dirn'] = 1
-                        st['col'] = float(np.clip(st['col'], 0, ncol - 1))
-                    c = int(round(st['col']))
-                    c = int(np.clip(c, 0, ncol - 1))
+                if sweep_col is not None:
+                    c = sweep_col
                 elif is_drag:
                     # 孤立 drag：落外侧，避开中间带（真谱 drag |x| 中位 325px，中间带只占 10%）
                     side = rng.choice([-1, 1])
@@ -213,7 +224,12 @@ def main():
                 pos = [c]
             elif k == 2:
                 types2 = [x['type'] for x in items]
-                if 3 in types2 and types2 != [3, 3]:
+                if sweep_col is not None:
+                    # 扫线段内的双 drag：围绕扫线列做窄对称，保持扫线连续性
+                    pos = [int(np.clip(sweep_col - 2, 0, ncol - 1)),
+                           int(np.clip(sweep_col + 2, 0, ncol - 1))]
+                    i = sweep_col
+                elif 3 in types2 and types2 != [3, 3]:
                     # drag 与 tap 同拍：drag 落在 tap 外侧（真谱 29% 的 drag 是伴 tap 出现）
                     side = rng.choice([-1, 1])
                     base = int(np.clip(round(rng.gauss(15, 4)), 9, 26))
