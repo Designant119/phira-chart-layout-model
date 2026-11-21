@@ -124,6 +124,7 @@ def main():
     w2_px = 225.0 - 26.5 * td
     w3_px = 253.0 + 58.5 * td
     w4_px = 270.0 + 67.5 * td
+    mag_c = tgt_px / colw  # drag 横向尺度的格数：本曲目标步长换算成格，drag 就落在这个量级附近
     print(f'# 间隔中位 {med_iv:.3f}s 目标步长 {tgt_px:.0f}px 缩放 {step_scale:.2f} 同列概率 {scp:.2f} 换向 {flip_p:.2f} 密度档 {td:.2f}')
 
     for seg in segs:
@@ -161,9 +162,10 @@ def main():
             if runinfo and runinfo[2] >= 4:
                 r_id, r_idx, r_len = runinfo
                 if r_id not in run_state:
-                    amp = rng.uniform(14.0, 34.0)
-                    # 步长必须明显小于半幅，否则每拍都撞界反弹，位置会乱跳
-                    stepc = min(rng.uniform(6.0, 20.0), amp * 0.72)
+                    # 扫线幅度跟着本曲横向尺度走；步长取半幅的 0.28~0.5，一次横穿约 3 拍，
+                    # 和真谱往复扫（如 31572 那串 180px 步长、半幅 540px）一个量级
+                    amp = rng.uniform(mag_c * 0.65, mag_c * 1.35)
+                    stepc = amp * rng.uniform(0.28, 0.48)
                     run_state[r_id] = {
                         'amp': amp,
                         'step': stepc,
@@ -191,9 +193,9 @@ def main():
                 if sweep_col is not None:
                     c = sweep_col
                 elif is_drag:
-                    # 孤立 drag：落外侧，避开中间带（真谱 drag |x| 中位 325px，中间带只占 10%）
+                    # 孤立 drag：落在偏外但跟着本曲横向尺度走（真谱 drag |x| 与本曲 tap 基本同量级）
                     side = rng.choice([-1, 1])
-                    mag = int(np.clip(round(rng.gauss(19, 5)), 14, 41))
+                    mag = int(np.clip(round(rng.gauss(mag_c, mag_c * 0.45)), 3, 41))
                     c = int(np.clip(round(h + side * mag), 0, ncol - 1))
                 elif rng.random() < scp:
                     c = i
@@ -230,14 +232,22 @@ def main():
                            int(np.clip(sweep_col + 2, 0, ncol - 1))]
                     i = sweep_col
                 elif 3 in types2 and types2 != [3, 3]:
-                    # drag 与 tap 同拍：drag 落在 tap 外侧（真谱 29% 的 drag 是伴 tap 出现）
-                    side = rng.choice([-1, 1])
-                    base = int(np.clip(round(rng.gauss(15, 4)), 9, 26))
-                    ext = base + int(np.clip(round(rng.gauss(10, 3)), 5, 18))
-                    ct = int(np.clip(round(h + side * base), 0, ncol - 1))
-                    cd = int(np.clip(round(h + side * ext), 0, ncol - 1))
-                    pos = [cd if t == 3 else ct for t in types2]
-                    i = cd
+                    # drag 与 tap 同拍：位置贴着 tap（真谱 15831 里 drag 与 tap 的 |x| 中位完全相同）
+                    # 46.4% 比 tap 更靠外，27.9% 更靠内，25.8% 差不多
+                    tap_col = int(np.clip(round(i), 0, ncol - 1))
+                    if rng.random() < 0.45:
+                        off = rng.randint(2, 12)
+                        sgn = 1
+                    else:
+                        off = rng.randint(0, 7)
+                        sgn = -1
+                    out_dir = np.sign(tap_col - h) or rng.choice([-1, 1])
+                    cd = int(np.clip(round(tap_col + sgn * out_dir * off), 0, ncol - 1))
+                    # 真谱里少数 drag 才落到中间带（13%），落到中带就多半往外推一档
+                    if abs(cd - h) < 9 and rng.random() < 0.65:
+                        cd = int(np.clip(round(tap_col + out_dir * rng.randint(3, 12)), 0, ncol - 1))
+                    pos = [cd if t == 3 else tap_col for t in types2]
+                    i = tap_col
                 else:
                     w2 = max(1, int(round(w2_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
                     ch_raw = (i if rng.random() < chord_follow_p else h) + bias
