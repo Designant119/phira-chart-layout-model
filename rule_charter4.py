@@ -109,13 +109,21 @@ def main():
     scp = min(max(0.15 + 0.47 * (med_iv - 0.094), 0.13), 0.22)
     flip_p = 0.70
     chord_follow_p = min(max((0.13 - med_iv) * 4.0, 0.0), 0.8)  # 密集谱多押中心跟随游走
-    print(f'# 间隔中位 {med_iv:.3f}s 目标步长 {tgt_px:.0f}px 缩放 {step_scale:.2f} 同列概率 {scp:.2f} 换向 {flip_p:.2f}')
+    # 多押半宽（px）按全量分层中位插值：2押随密度略收，3/4押随密度加宽
+    # 锚点 稀疏 iv=0.200 / 密集 iv=0.083，全宽中位 → 半宽 px
+    td = min(max((0.200 - med_iv) / (0.200 - 0.083), 0.0), 1.0)
+    colw = gap * (2 * HALF / (NB - 1))
+    w2_px = 225.0 - 26.5 * td
+    w3_px = 253.0 + 58.5 * td
+    w4_px = 270.0 + 67.5 * td
+    print(f'# 间隔中位 {med_iv:.3f}s 目标步长 {tgt_px:.0f}px 缩放 {step_scale:.2f} 同列概率 {scp:.2f} 换向 {flip_p:.2f} 密度档 {td:.2f}')
 
     for seg in segs:
         # 单音走位移状态机游走；多押按押型独立选对称宽度
         i = h
         dirn = 1
         last_use = [-1e9] * ncol  # 每列最近一次落点时间，用于生成端避让
+        L = R = 0                # 段内左右落点计数，平衡拉力用
 
         for bt in seg:
             items = groups[bt]
@@ -131,13 +139,26 @@ def main():
                     return min(cand, key=lambda q: last_use[q])
                 return c
 
+            # 多押中心偏移：一侧偏多时整组往偏少侧挪
+            if L - R >= 2:
+                bias = rng.choice([0, 1, 2])
+            elif R - L >= 2:
+                bias = rng.choice([-2, -1, 0])
+            else:
+                bias = rng.choice([-2, -1, 0, 0, 1, 2])
+
             if k == 1:
                 if rng.random() < scp:
                     c = i
                 else:
                     step = wchoice(rng, STEP_IDX, STEP_W)
                     step = max(1, int(round(step * step_scale)))
-                    if rng.random() < flip_p:
+                    # 平衡拉力：本段一侧落太多，就把方向掰去偏少侧
+                    if i <= h and L - R >= 2:
+                        dirn = 1
+                    elif i >= h and R - L >= 2:
+                        dirn = -1
+                    elif rng.random() < flip_p:
                         dirn = -dirn
                     nc = i + dirn * step
                     if nc < 0:
@@ -149,24 +170,31 @@ def main():
                         c = int(np.clip(h + dirn, 0, ncol - 1))
                     c = avoid(c)
                 i = c
+                if c < h:
+                    L += 1
+                elif c > h:
+                    R += 1
                 pos = [c]
             elif k == 2:
-                ch = int(np.clip((i if rng.random() < chord_follow_p else h) + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                w2 = max(1, int(round(w2_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                ch_raw = (i if rng.random() < chord_follow_p else h) + bias
+                ch = int(np.clip(ch_raw, w2, ncol - 1 - w2))
                 ch = avoid(ch)
-                w2 = max(1, int(round(rng.choice([2, 3, 3, 3, 3, 4, 6]) * step_scale)))
                 l = int(np.clip(ch - w2, 0, ncol - 1)); r = int(np.clip(ch + w2, 0, ncol - 1))
                 pos = [l, r]; i = r if dirn > 0 else l
             elif k == 3:
-                ch = int(np.clip((i if rng.random() < chord_follow_p else h) + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                w3 = max(2, int(round(w3_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                ch_raw = (i if rng.random() < chord_follow_p else h) + bias
+                ch = int(np.clip(ch_raw, w3, ncol - 1 - w3))
                 ch = avoid(ch)
-                w3 = max(2, int(round(rng.choice([4, 4, 5, 5]) * step_scale)))
                 l = int(np.clip(ch - w3, 0, ncol - 1)); r = int(np.clip(ch + w3, 0, ncol - 1))
                 mid = int(np.clip(ch + rng.choice([-1, 0, 0, 1]), 0, ncol - 1))
                 pos = [l, mid, r]; i = h
             else:
-                ch = int(np.clip((i if rng.random() < chord_follow_p else h) + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                w4 = max(1, int(round(w4_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                ch_raw = (i if rng.random() < chord_follow_p else h) + bias
+                ch = int(np.clip(ch_raw, w4, ncol - 1 - w4))
                 ch = avoid(ch)
-                w4 = max(1, int(round(rng.choice([2, 3, 3, 3, 3, 4, 6]) * step_scale)))
                 l = int(np.clip(ch - w4, 0, ncol - 1)); r = int(np.clip(ch + w4, 0, ncol - 1))
                 if rng.random() < 0.6 or h < 2:
                     pos = [l, l, r, r]
@@ -177,11 +205,19 @@ def main():
             seen, clean = set(), []
             for p in pos:
                 p = int(np.clip(p, 0, ncol - 1))
-                if k == 1 and p in seen:
-                    p = int(np.clip(p + 1, 0, ncol - 1))
+                if p in seen:
+                    for dd in range(1, ncol):
+                        if p - dd >= 0 and p - dd not in seen:
+                            p = p - dd; break
+                        if p + dd < ncol and p + dd not in seen:
+                            p = p + dd; break
                 seen.add(p); clean.append(p)
             for p in clean:
                 last_use[p] = cur_t
+                if p < h:
+                    L += 1
+                elif p > h:
+                    R += 1
             for kk, r in enumerate(items):
                 c = clean[kk] if kk < len(clean) else clean[-1]
                 r['out'] = g2x(cols[c])
@@ -260,6 +296,14 @@ def main():
     print('段 %d 总音 %d' % (len(segs), len(notes)))
     print('步长中位 %.0f 交替 %.2f 占用 %d 格 单格最多 %d 同列率 %.1f%% 24音跨度中位 %.0f' % (
         step_med, alt, len(u), c2.max(), 100 * same, np.median(spans)))
+    _byk = _dd(list)
+    for v in _g.values():
+        if len(v) >= 2:
+            _byk[len(v)].append(max(v) - min(v))
+    chord_str = ' '.join('%d押%.0f(n%d)' % (k, np.median(_byk[k]), len(_byk[k])) for k in (2, 3, 4) if _byk[k])
+    _all = np.array([r['out'] for r in notes])
+    lr = '左%.2f 右%.2f 边%.2f' % ((_all < -100).mean(), (_all > 100).mean(), (np.abs(_all) > 400).mean())
+    print('多押', chord_str, '|', lr)
 
 
 if __name__ == '__main__':
