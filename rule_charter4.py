@@ -62,11 +62,33 @@ def main():
                 continue
             beat = rpe_time_to_beat(n['startTime'])
             notes.append({'b': round(beat, 4), 't': b2s(beat),
-                          'li': li, 'ni': ni, 'out': 0.0})
+                          'li': li, 'ni': ni, 'out': 0.0,
+                          'type': int(n.get('type', 1))})
     groups = defaultdict(list)
     for r in notes:
         groups[r['b']].append(r)
     order = sorted(groups)
+
+    # ---- drag 段识别：时间相邻、整拍全是 drag 的连续段（真谱 drag 扫线都是单拍单 drag）----
+    drag_run = {}          # 拍 -> (run_id, idx_in_run, run_len)
+    run_state = {}         # run_id -> 扫线状态
+    rid = -1
+    cur_run = []
+    def _flush_run():
+        nonlocal rid
+        if len(cur_run) >= 1:
+            rid += 1
+            for idx, b in enumerate(cur_run):
+                drag_run[b] = (rid, idx, len(cur_run))
+        cur_run.clear()
+    for b in order:
+        grp = groups[b]
+        all_drag = all(x['type'] == 3 for x in grp)
+        if all_drag:
+            cur_run.append(b)
+        else:
+            _flush_run()
+    _flush_run()
 
     # 切段
     segs, cur, cnt = [], [], 0
@@ -134,7 +156,35 @@ def main():
                 bias = rng.choice([-2, -1, 0, 0, 1, 2])
 
             if k == 1:
-                if rng.random() < scp:
+                is_drag = items[0]['type'] == 3
+                runinfo = drag_run.get(bt)
+                if is_drag and runinfo and runinfo[2] >= 4:
+                    # drag 扫线：同一段内等步长推进，撞到幅度边界反弹（真谱 58% 是这种往复扫）
+                    r_id = runinfo[0]
+                    if r_id not in run_state:
+                        amp = rng.uniform(12.0, 34.0)          # 半幅（格）
+                        run_state[r_id] = {
+                            'amp': amp,
+                            'step': rng.uniform(8.0, 24.0),    # 每拍横向步长（格）
+                            'col': h + rng.uniform(-amp * 0.55, amp * 0.55),
+                            'dirn': rng.choice([-1, 1])}
+                    st = run_state[r_id]
+                    if runinfo[1] > 0:
+                        st['col'] += st['dirn'] * st['step']
+                        lo, hi = h - st['amp'], h + st['amp']
+                        if st['col'] > hi:
+                            st['col'] = 2 * hi - st['col']; st['dirn'] = -1
+                        elif st['col'] < lo:
+                            st['col'] = 2 * lo - st['col']; st['dirn'] = 1
+                        st['col'] = float(np.clip(st['col'], 0, ncol - 1))
+                    c = int(round(st['col']))
+                    c = int(np.clip(c, 0, ncol - 1))
+                elif is_drag:
+                    # 孤立 drag：落外侧，避开中间带（真谱 drag |x| 中位 325px，中间带只占 10%）
+                    side = rng.choice([-1, 1])
+                    mag = int(np.clip(round(rng.gauss(19, 5)), 14, 41))
+                    c = int(np.clip(round(h + side * mag), 0, ncol - 1))
+                elif rng.random() < scp:
                     c = i
                 else:
                     step = wchoice(rng, STEP_IDX, STEP_W)
@@ -162,12 +212,23 @@ def main():
                     R += 1
                 pos = [c]
             elif k == 2:
-                w2 = max(1, int(round(w2_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
-                ch_raw = (i if rng.random() < chord_follow_p else h) + bias
-                ch = int(np.clip(ch_raw, w2, ncol - 1 - w2))
-                ch = avoid(ch)
-                l = int(np.clip(ch - w2, 0, ncol - 1)); r = int(np.clip(ch + w2, 0, ncol - 1))
-                pos = [l, r]; i = r if dirn > 0 else l
+                types2 = [x['type'] for x in items]
+                if 3 in types2 and types2 != [3, 3]:
+                    # drag 与 tap 同拍：drag 落在 tap 外侧（真谱 29% 的 drag 是伴 tap 出现）
+                    side = rng.choice([-1, 1])
+                    base = int(np.clip(round(rng.gauss(15, 4)), 9, 26))
+                    ext = base + int(np.clip(round(rng.gauss(10, 3)), 5, 18))
+                    ct = int(np.clip(round(h + side * base), 0, ncol - 1))
+                    cd = int(np.clip(round(h + side * ext), 0, ncol - 1))
+                    pos = [cd if t == 3 else ct for t in types2]
+                    i = cd
+                else:
+                    w2 = max(1, int(round(w2_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                    ch_raw = (i if rng.random() < chord_follow_p else h) + bias
+                    ch = int(np.clip(ch_raw, w2, ncol - 1 - w2))
+                    ch = avoid(ch)
+                    l = int(np.clip(ch - w2, 0, ncol - 1)); r = int(np.clip(ch + w2, 0, ncol - 1))
+                    pos = [l, r]; i = r if dirn > 0 else l
             elif k == 3:
                 w3 = max(2, int(round(w3_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
                 ch_raw = (i if rng.random() < chord_follow_p else h) + bias
@@ -290,6 +351,16 @@ def main():
     _all = np.array([r['out'] for r in notes])
     lr = '左%.2f 右%.2f 边%.2f' % ((_all < -100).mean(), (_all > 100).mean(), (np.abs(_all) > 400).mean())
     print('多押', chord_str, '|', lr)
+    _drags = np.array([abs(r['out']) for r in notes if r['type'] == 3])
+    if len(_drags) >= 3:
+        _runs = {}
+        for b, (rid_, idx_, ln_) in drag_run.items():
+            _runs[rid_] = ln_
+        sweep_runs = sum(1 for v in _runs.values() if v >= 4)
+        print('drag n=%d |x|中位%.0f 中间带135内 %.1f%% 外侧400上 %.1f%% 扫线段%d 最长%d' % (
+            len(_drags), np.median(_drags),
+            100 * float((_drags < 135).mean()), 100 * float((_drags > 400).mean()),
+            sweep_runs, max(_runs.values()) if _runs else 0))
 
 
 if __name__ == '__main__':
