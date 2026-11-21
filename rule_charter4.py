@@ -17,9 +17,6 @@ HALF = 675.0
 SEG = 24
 SAME_CELL_P = 0.28      # 基准：原地同列概率（0.183s 间隔谱面口径，运行时按密度自适应）
 FLIP_P = 0.53           # 基准：单步换向概率（运行时按密度自适应）
-GAP_CHOICES = [5, 5, 5, 4, 6]
-NCOL_CHOICES = [13, 13, 13, 12, 14]
-SWAP_P = 0.0            # 段间换网格概率：整首一套对齐网格
 # 非零步长的跳列数权重（按真谱 15831 实测计数）
 STEP_W = [15, 63, 128, 285, 90, 183, 72, 109, 23, 11, 0, 23]
 STEP_IDX = list(range(1, 13))
@@ -27,17 +24,6 @@ STEP_IDX = list(range(1, 13))
 
 def g2x(c):
     return -HALF + c / (NB - 1) * 2 * HALF
-
-
-def build_grid(gap, ncol, center):
-    half = (ncol - 1) / 2.0
-    return [center + (i - half) * gap for i in range(ncol)]
-
-
-def col_weights(ncol):
-    half = (ncol - 1) / 2.0
-    w = [1.0 / (1.0 + abs(i - half) * 0.28) for i in range(ncol)]
-    return np.array(w, dtype=np.float64)
 
 
 def wchoice(rng, idx, w):
@@ -82,7 +68,6 @@ def main():
         groups[r['b']].append(r)
     order = sorted(groups)
 
-    center = (NB - 1) / 2.0
     # 切段
     segs, cur, cnt = [], [], 0
     for b in order:
@@ -93,11 +78,12 @@ def main():
     if cur:
         segs.append(cur)
 
-    gap = rng.choice(GAP_CHOICES)
-    ncol = rng.choice(NCOL_CHOICES)
-    cols = build_grid(gap, ncol, center)
-    half = (ncol - 1) / 2.0
+    # 全格位游走：候选列位放开到全部 81 格，不再锁十几列等间距网格
+    ncol = NB
+    cols = list(range(NB))
+    half = (NB - 1) / 2.0
     h = int(round(half))
+    COL_STEP = 4  # 原基准列宽换算格步用，跳列权重 → 格步
 
     # 密度自适应：基准取全量 9746 首谱面分层中位（full_baseline.py）
     # 换向全量恒定 0.70；步长/同列率随密度略变；|x| 中位恒定 225px
@@ -112,7 +98,7 @@ def main():
     # 多押半宽（px）按全量分层中位插值：2押随密度略收，3/4押随密度加宽
     # 锚点 稀疏 iv=0.200 / 密集 iv=0.083，全宽中位 → 半宽 px
     td = min(max((0.200 - med_iv) / (0.200 - 0.083), 0.0), 1.0)
-    colw = gap * (2 * HALF / (NB - 1))
+    colw = 2 * HALF / (NB - 1)  # 每格 px
     w2_px = 225.0 - 26.5 * td
     w3_px = 253.0 + 58.5 * td
     w4_px = 270.0 + 67.5 * td
@@ -152,7 +138,7 @@ def main():
                     c = i
                 else:
                     step = wchoice(rng, STEP_IDX, STEP_W)
-                    step = max(1, int(round(step * step_scale)))
+                    step = max(1, int(round(step * COL_STEP * step_scale)))
                     # 平衡拉力：本段一侧落太多，就把方向掰去偏少侧
                     if i <= h and L - R >= 2:
                         dirn = 1
