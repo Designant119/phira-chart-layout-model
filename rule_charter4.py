@@ -99,25 +99,38 @@ def main():
     half = (ncol - 1) / 2.0
     h = int(round(half))
 
-    # 密度自适应：音越密，位移越小、同列越多（真谱 15831 间隔0.183s→步长338px，15728 间隔0.083s→225px）
+    # 密度自适应：基准取全量 9746 首谱面分层中位（full_baseline.py）
+    # 换向全量恒定 0.70；步长/同列率随密度略变；|x| 中位恒定 225px
     ts = sorted(set(r['t'] for r in notes))
     ivs = [ts[i + 1] - ts[i] for i in range(len(ts) - 1)]
-    med_iv = float(np.median(ivs)) if ivs else 0.183
-    tgt_px = min(max(225.0 + 1130.0 * (med_iv - 0.083), 170.0), 400.0)
-    step_scale = tgt_px / 338.0
-    scp = min(max(0.28 - (0.183 - med_iv) * 0.9, 0.12), 0.30)
-    flip_p = min(max(0.53 + (0.183 - med_iv) * 3.0, 0.45), 0.86)
-    chord_follow_p = min(max((0.183 - med_iv) * 4.0, 0.0), 0.8)  # 密集谱多押中心跟随游走
+    med_iv = float(np.median(ivs)) if ivs else 0.13
+    tgt_px = min(max(263.0 + 245.0 * (med_iv - 0.094), 250.0), 300.0)
+    step_scale = tgt_px / 270.0
+    scp = min(max(0.15 + 0.47 * (med_iv - 0.094), 0.13), 0.22)
+    flip_p = 0.70
+    chord_follow_p = min(max((0.13 - med_iv) * 4.0, 0.0), 0.8)  # 密集谱多押中心跟随游走
     print(f'# 间隔中位 {med_iv:.3f}s 目标步长 {tgt_px:.0f}px 缩放 {step_scale:.2f} 同列概率 {scp:.2f} 换向 {flip_p:.2f}')
 
     for seg in segs:
         # 单音走位移状态机游走；多押按押型独立选对称宽度
         i = h
         dirn = 1
+        last_use = [-1e9] * ncol  # 每列最近一次落点时间，用于生成端避让
 
         for bt in seg:
             items = groups[bt]
             k = len(items)
+            cur_t = items[0]['t']
+            cool = 1.0 * med_iv
+
+            def avoid(c):
+                # 目标列刚被占用过，就在邻近列里挑冷却最久的，生成时自然错开
+                if last_use[c] > cur_t - cool:
+                    lo, hi = max(0, c - 2), min(ncol - 1, c + 2)
+                    cand = list(range(lo, hi + 1))
+                    return min(cand, key=lambda q: last_use[q])
+                return c
+
             if k == 1:
                 if rng.random() < scp:
                     c = i
@@ -134,21 +147,25 @@ def main():
                     c = int(np.clip(nc, 0, ncol - 1))
                     if c == h and rng.random() < 0.6:
                         c = int(np.clip(h + dirn, 0, ncol - 1))
+                    c = avoid(c)
                 i = c
                 pos = [c]
             elif k == 2:
                 ch = int(np.clip((i if rng.random() < chord_follow_p else h) + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                ch = avoid(ch)
                 w2 = max(1, int(round(rng.choice([2, 3, 3, 3, 3, 4, 6]) * step_scale)))
                 l = int(np.clip(ch - w2, 0, ncol - 1)); r = int(np.clip(ch + w2, 0, ncol - 1))
                 pos = [l, r]; i = r if dirn > 0 else l
             elif k == 3:
                 ch = int(np.clip((i if rng.random() < chord_follow_p else h) + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                ch = avoid(ch)
                 w3 = max(2, int(round(rng.choice([4, 4, 5, 5]) * step_scale)))
                 l = int(np.clip(ch - w3, 0, ncol - 1)); r = int(np.clip(ch + w3, 0, ncol - 1))
                 mid = int(np.clip(ch + rng.choice([-1, 0, 0, 1]), 0, ncol - 1))
                 pos = [l, mid, r]; i = h
             else:
                 ch = int(np.clip((i if rng.random() < chord_follow_p else h) + rng.choice([-2, -1, 0, 0, 1, 2]), 0, ncol - 1))
+                ch = avoid(ch)
                 w4 = max(1, int(round(rng.choice([2, 3, 3, 3, 3, 4, 6]) * step_scale)))
                 l = int(np.clip(ch - w4, 0, ncol - 1)); r = int(np.clip(ch + w4, 0, ncol - 1))
                 if rng.random() < 0.6 or h < 2:
@@ -163,6 +180,8 @@ def main():
                 if k == 1 and p in seen:
                     p = int(np.clip(p + 1, 0, ncol - 1))
                 seen.add(p); clean.append(p)
+            for p in clean:
+                last_use[p] = cur_t
             for kk, r in enumerate(items):
                 c = clean[kk] if kk < len(clean) else clean[-1]
                 r['out'] = g2x(cols[c])
@@ -219,15 +238,28 @@ def main():
         l['skewControl'] = static_skew
     json.dump(d, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False)
 
+    # 统计口径与 full_baseline 对齐：单音序列、非零步算换向；同列率也在单音序列上
+    from collections import defaultdict as _dd
+    _g = _dd(list)
+    for r in notes:
+        _g[round(r['b'], 3)].append(r['out'])
+    _singles = [v[0] for v in _g.values() if len(v) == 1]
+    if len(_singles) >= 3:
+        _s = np.array(_singles, dtype=float)
+        _dx = np.abs(np.diff(_s))
+        same = float((_dx < 20).mean())
+        _d = np.diff(_s); _d = _d[np.abs(_d) > 1e-6]
+        alt = float((np.sign(_d[:-1]) * np.sign(_d[1:]) < 0).mean()) if len(_d) >= 2 else 0.5
+        step_med = float(np.median(_dx[_dx > 1e-6])) if (_dx > 1e-6).any() else 0.0
+    else:
+        alt, same, step_med = 0.5, 0.0, 0.0
     xs = np.array([r['out'] for r in sorted(notes, key=lambda r: r['b'])])
-    dx = np.abs(np.diff(xs)); s = np.sign(np.diff(xs))
-    alt = float((s[:-1] * s[1:] < 0).mean()) if len(s) > 1 else 0
     q = np.clip(np.round((xs + HALF) / (2 * HALF) * (NB - 1)), 0, NB - 1).astype(int)
     u, c2 = np.unique(q, return_counts=True)
     spans = [xs[j:j + SEG].max() - xs[j:j + SEG].min() for j in range(0, max(1, len(xs) - SEG), SEG)]
     print('段 %d 总音 %d' % (len(segs), len(notes)))
     print('步长中位 %.0f 交替 %.2f 占用 %d 格 单格最多 %d 同列率 %.1f%% 24音跨度中位 %.0f' % (
-        np.median(dx), alt, len(u), c2.max(), 100 * (dx < 20).mean(), np.median(spans)))
+        step_med, alt, len(u), c2.max(), 100 * same, np.median(spans)))
 
 
 if __name__ == '__main__':
