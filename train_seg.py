@@ -34,8 +34,9 @@ def g2x(g):
     return -HALF + g / (NB - 1) * 2 * HALF
 
 
-def load_rows(path, cap=0):
-    rows = []
+def load_data(path, cap=0):
+    """边读边特征化，原始记录用完就丢，控制内存"""
+    data = []
     with gzip.open(path, 'rt') as f:
         for line in f:
             try:
@@ -46,10 +47,11 @@ def load_rows(path, cap=0):
                 continue
             if r['beats'] < 6 or r['beats'] > MAXLEN:
                 continue
-            rows.append(r)
-            if cap and len(rows) >= cap:
+            F, y = featurize(r)
+            data.append((F, y, r['fid']))
+            if cap and len(data) >= cap:
                 break
-    return rows
+    return data
 
 
 def featurize(r):
@@ -94,11 +96,9 @@ class SegNet(nn.Module):
 
 
 def batchify(rs):
-    F, Y, M = [], [], []
-    for r in rs:
-        f, y = featurize(r)
-        F.append(f); Y.append(y)
-        M.append(np.ones(len(y), dtype=np.float32))
+    F = [d[0] for d in rs]
+    Y = [d[1] for d in rs]
+    M = [np.ones(len(d[1]), dtype=np.float32) for d in rs]
     n = max(len(y) for y in Y)
     Fb = np.zeros((len(rs), n, 9), dtype=np.float32)
     Yb = np.zeros((len(rs), n), dtype=np.int64)
@@ -112,12 +112,12 @@ def main():
     path = sys.argv[1] if len(sys.argv) > 1 else \
         '/home/user/Doubao/chats/38453392661469954/_run_real_traj/seg_index.jsonl.gz'
     cap = int(sys.argv[2]) if len(sys.argv) > 2 else 200000
-    rows = load_rows(path, cap)
-    print('可用段 %d' % len(rows))
-    fids = sorted(set(r['fid'] for r in rows))
+    rows = load_data(path, cap)
+    print('可用段 %d' % len(rows), flush=True)
+    fids = sorted(set(r[2] for r in rows))
     val_fid = set(random.sample(fids, max(1, len(fids) // 20)))
-    tr = [r for r in rows if r['fid'] not in val_fid]
-    va = [r for r in rows if r['fid'] in val_fid]
+    tr = [r for r in rows if r[2] not in val_fid]
+    va = [r for r in rows if r[2] in val_fid]
     print('训练 %d 段 / 验证 %d 段（按曲目切分，不泄漏）' % (len(tr), len(va)))
 
     model = SegNet()
@@ -155,7 +155,7 @@ def evaluate(model, va):
         Fb, Yb, Mb = batchify(rs)
         lg = model(Fb)
         for i, r in enumerate(rs):
-            n = len(r['chord'])
+            n = len(r[1])
             p = lg[i, :n]
             prob = torch.softmax(p, dim=-1)
             # 采样而不是 argmax
