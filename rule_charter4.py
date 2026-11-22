@@ -239,11 +239,11 @@ def main():
                     # 46.4% 比 tap 更靠外，27.9% 更靠内，25.8% 差不多
                     tap_col = int(np.clip(round(i), 0, ncol - 1))
                     if rng.random() < 0.45:
-                        off = rng.randint(2, 12)
+                        off = rng.randint(3, 12)
                         sgn = 1
                     else:
-                        # 不能给 0：off=0 时 drag 会和 tap 完全重合，画面上叠成一颗
-                        off = rng.randint(1, 7)
+                        # 至少 2 格(34px)：差一格(17px)在画面上是"半叠"，真谱从不这么写
+                        off = rng.randint(2, 7)
                         sgn = -1
                     out_dir = np.sign(tap_col - h) or rng.choice([-1, 1])
                     cd = int(np.clip(round(tap_col + sgn * out_dir * off), 0, ncol - 1))
@@ -253,14 +253,14 @@ def main():
                     pos = [cd if t == 3 else tap_col for t in types2]
                     i = tap_col
                 else:
-                    w2 = max(1, int(round(w2_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                    w2 = max(2, int(round(w2_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
                     ch_raw = (i if rng.random() < chord_follow_p else h) + bias
                     ch = int(np.clip(ch_raw, w2, ncol - 1 - w2))
                     ch = avoid(ch)
                     l = int(np.clip(ch - w2, 0, ncol - 1)); r = int(np.clip(ch + w2, 0, ncol - 1))
                     pos = [l, r]; i = r if dirn > 0 else l
             elif k == 3:
-                w3 = max(2, int(round(w3_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                w3 = max(3, int(round(w3_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
                 ch_raw = (i if rng.random() < chord_follow_p else h) + bias
                 ch = int(np.clip(ch_raw, w3, ncol - 1 - w3))
                 ch = avoid(ch)
@@ -274,16 +274,16 @@ def main():
                 ch = avoid(ch)
                 l = int(np.clip(ch - w4, 0, ncol - 1)); r = int(np.clip(ch + w4, 0, ncol - 1))
                 if rng.random() < 0.6 or h < 2:
-                    # 成对但第二颗往外错一格：真谱是同列完全重合，单线上会叠成一颗看不见
-                    li2 = int(np.clip(l - 1, 0, ncol - 1))
-                    ri2 = int(np.clip(r + 1, 0, ncol - 1))
+                    # 成对，第二颗错开 2 格(34px)。真谱里同一拍音符的间距只有"完全重合"和"≥25px"两种
+                    li2 = int(np.clip(l - 2, 0, ncol - 1))
+                    ri2 = int(np.clip(r + 2, 0, ncol - 1))
                     pos = [l, li2, r, ri2]
                 else:
                     # 真谱另一种四押是"内外两对"（如 -506,-168,168,506），仍是成对同列
                     inn = int(np.clip(round(w4 * rng.uniform(0.35, 0.95)), 1, max(1, w4)))
                     li = int(np.clip(ch - inn, 0, ncol - 1)); ri = int(np.clip(ch + inn, 0, ncol - 1))
-                    pos = [li, int(np.clip(li - 1, 0, ncol - 1)),
-                           ri, int(np.clip(ri + 1, 0, ncol - 1))]
+                    pos = [li, int(np.clip(li - 2, 0, ncol - 1)),
+                           ri, int(np.clip(ri + 2, 0, ncol - 1))]
                 pos = pos[:k]; i = r if dirn > 0 else l
             seen, clean = set(), []
             allow_dup = (k == 4)  # 真谱四押就是左右各两颗严格同列重合
