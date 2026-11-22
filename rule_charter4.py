@@ -242,7 +242,8 @@ def main():
                         off = rng.randint(2, 12)
                         sgn = 1
                     else:
-                        off = rng.randint(0, 7)
+                        # 不能给 0：off=0 时 drag 会和 tap 完全重合，画面上叠成一颗
+                        off = rng.randint(1, 7)
                         sgn = -1
                     out_dir = np.sign(tap_col - h) or rng.choice([-1, 1])
                     cd = int(np.clip(round(tap_col + sgn * out_dir * off), 0, ncol - 1))
@@ -273,12 +274,16 @@ def main():
                 ch = avoid(ch)
                 l = int(np.clip(ch - w4, 0, ncol - 1)); r = int(np.clip(ch + w4, 0, ncol - 1))
                 if rng.random() < 0.6 or h < 2:
-                    pos = [l, l, r, r]
+                    # 成对但第二颗往外错一格：真谱是同列完全重合，单线上会叠成一颗看不见
+                    li2 = int(np.clip(l - 1, 0, ncol - 1))
+                    ri2 = int(np.clip(r + 1, 0, ncol - 1))
+                    pos = [l, li2, r, ri2]
                 else:
                     # 真谱另一种四押是"内外两对"（如 -506,-168,168,506），仍是成对同列
                     inn = int(np.clip(round(w4 * rng.uniform(0.35, 0.95)), 1, max(1, w4)))
                     li = int(np.clip(ch - inn, 0, ncol - 1)); ri = int(np.clip(ch + inn, 0, ncol - 1))
-                    pos = [li, li, ri, ri]
+                    pos = [li, int(np.clip(li - 1, 0, ncol - 1)),
+                           ri, int(np.clip(ri + 1, 0, ncol - 1))]
                 pos = pos[:k]; i = r if dirn > 0 else l
             seen, clean = set(), []
             allow_dup = (k == 4)  # 真谱四押就是左右各两颗严格同列重合
@@ -340,13 +345,27 @@ def main():
         return [{"bezier": 0, "bezierPoints": [0, 0, 0, 0], "easingLeft": 0.0,
                  "easingRight": 1.0, "easingType": 1, "end": val, "endTime": [1, 0, 1],
                  "linkgroup": 0, "start": val, "startTime": [0, 0, 1]}]
-    static_layer = [{
-        "alphaEvents": _static_ev(255),
-        "moveXEvents": _static_ev(0), "moveYEvents": _static_ev(0),
-        "rotateEvents": _static_ev(0),
-        "speedEvents": _static_ev(10.0)}]
-    for l in d['judgeLineList']:
-        l['eventLayers'] = static_layer
+    # 判定线不再全锁平：真谱 15831 每条线都有 rotate/moveY 动效，音符沿倾斜的线铺开
+    # 音最多的那条线保持水平当主轴，其余线按闲置顺序给固定倾角
+    ANGLE_POOL = [0, -28, 26, -18, 18, 33, -33]
+    YOFF_POOL = [0, -420, 420, -210, 210, -560, 560]
+    sound_lines = [i for i, jl in enumerate(d['judgeLineList']) if jl.get('notes')]
+    sound_lines.sort(key=lambda i: -len(d['judgeLineList'][i]['notes']))
+    for rank, li in enumerate(sound_lines):
+        ang = ANGLE_POOL[rank % len(ANGLE_POOL)]
+        yo = YOFF_POOL[rank % len(YOFF_POOL)]
+        d['judgeLineList'][li]['eventLayers'] = [{
+            "alphaEvents": _static_ev(255),
+            "moveXEvents": _static_ev(0), "moveYEvents": _static_ev(yo),
+            "rotateEvents": _static_ev(ang),
+            "speedEvents": _static_ev(10.0)}]
+    for li, l in enumerate(d['judgeLineList']):
+        if li not in sound_lines:
+            l['eventLayers'] = [{
+                "alphaEvents": _static_ev(255),
+                "moveXEvents": _static_ev(0), "moveYEvents": _static_ev(0),
+                "rotateEvents": _static_ev(0),
+                "speedEvents": _static_ev(10.0)}]
         l['posControl'] = static_pos
         l['yControl'] = static_y
         l['sizeControl'] = static_size
