@@ -37,6 +37,7 @@ def main():
     ap.add_argument('--chart', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--seed', type=int, default=11)
+    ap.add_argument('--use-model', action='store_true', help='单音位置改用段级模型')
     a = ap.parse_args()
 
     rng = random.Random(a.seed)
@@ -63,7 +64,14 @@ def main():
             beat = rpe_time_to_beat(n['startTime'])
             notes.append({'b': round(beat, 4), 't': b2s(beat),
                           'li': li, 'ni': ni, 'out': 0.0,
+                          'x': float(n.get('positionX', 0.0)),
                           'type': int(n.get('type', 1))})
+    mpos = {}
+    if a.use_model:
+        import model_pos
+        mpos = model_pos.build(notes, seed=a.seed)
+        print('# 段级模型给出 %d 拍位置' % len(mpos), flush=True)
+
     groups = defaultdict(list)
     for r in notes:
         groups[r['b']].append(r)
@@ -193,7 +201,12 @@ def main():
 
             if k == 1:
                 is_drag = items[0]['type'] == 3
-                if sweep_col is not None:
+                mpx = mpos.get(round(bt, 3)) if mpos else None
+                if mpx is not None and sweep_col is None and not is_drag:
+                    # 单音位置由段级模型决定（模型只看节奏指纹，不看原谱位置）
+                    c = int(np.clip(round((mpx + HALF) / colw), 0, ncol - 1))
+                    i = c
+                elif sweep_col is not None:
                     c = sweep_col
                 elif is_drag:
                     # 孤立 drag：落在偏外但跟着本曲横向尺度走（真谱 drag |x| 与本曲 tap 基本同量级）
