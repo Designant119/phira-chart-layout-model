@@ -353,6 +353,33 @@ def main():
                  "linkgroup": 0, "start": val, "startTime": [0, 0, 1]}]
     # 判定线不再全锁平：真谱 15831 每条线都有 rotate/moveY 动效，音符沿倾斜的线铺开
     # 音最多的那条线保持水平当主轴，其余线按闲置顺序给固定倾角
+    def _bt(b):
+        b = float(max(0.0, b))
+        return [int(b), int(round((b - int(b)) * 4)), 4]
+
+    def _ev(st, en, t0, t1):
+        return {"bezier": 0, "bezierPoints": [0, 0, 0, 0], "easingLeft": 0.0,
+                "easingRight": 1.0, "easingType": 1, "start": st, "end": en,
+                "startTime": t0, "endTime": t1, "linkgroup": 0}
+
+    # 每条线只在"自己有音符的那段时间"显示，避免同一时刻一堆线织成网格
+    line_span = {}
+    for r in notes:
+        li = r['li']; b = r['b']
+        if li not in line_span:
+            line_span[li] = [b, b]
+        else:
+            line_span[li][0] = min(line_span[li][0], b)
+            line_span[li][1] = max(line_span[li][1], b)
+
+    def alpha_track(li):
+        b0, b1 = line_span.get(li, (0, 1))
+        # 音符还在屏幕上方时线就该亮，所以窗口整体提前四拍
+        return [_ev(0, 0, [0, 0, 1], _bt(b0 - 5.0)),
+                _ev(0, 255, _bt(b0 - 5.0), _bt(b0 - 4.0)),
+                _ev(255, 255, _bt(b0 - 4.0), _bt(b1 + 2.0)),
+                _ev(255, 0, _bt(b1 + 2.0), _bt(b1 + 3.0))]
+
     ANGLE_POOL = [0, -28, 26, -18, 18, 33, -33]
     YOFF_POOL = [0, -420, 420, -210, 210, -560, 560]
     sound_lines = [i for i, jl in enumerate(d['judgeLineList']) if jl.get('notes')]
@@ -361,14 +388,15 @@ def main():
         ang = ANGLE_POOL[rank % len(ANGLE_POOL)]
         yo = YOFF_POOL[rank % len(YOFF_POOL)]
         d['judgeLineList'][li]['eventLayers'] = [{
-            "alphaEvents": _static_ev(255),
+            "alphaEvents": alpha_track(li),
             "moveXEvents": _static_ev(0), "moveYEvents": _static_ev(yo),
             "rotateEvents": _static_ev(ang),
             "speedEvents": _static_ev(10.0)}]
     for li, l in enumerate(d['judgeLineList']):
         if li not in sound_lines:
+            # 没音的线一律透明：真谱里它们本来就不显示，留着只会织成满屏网格
             l['eventLayers'] = [{
-                "alphaEvents": _static_ev(255),
+                "alphaEvents": _static_ev(0),
                 "moveXEvents": _static_ev(0), "moveYEvents": _static_ev(0),
                 "rotateEvents": _static_ev(0),
                 "speedEvents": _static_ev(10.0)}]
