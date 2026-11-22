@@ -244,19 +244,19 @@ def main():
                 types2 = [x['type'] for x in items]
                 if sweep_col is not None:
                     # 扫线段内的双 drag：围绕扫线列做窄对称，保持扫线连续性
-                    pos = [int(np.clip(sweep_col - 2, 0, ncol - 1)),
-                           int(np.clip(sweep_col + 2, 0, ncol - 1))]
+                    pos = [int(np.clip(sweep_col - 5, 0, ncol - 1)),
+                           int(np.clip(sweep_col + 5, 0, ncol - 1))]
                     i = sweep_col
                 elif 3 in types2 and types2 != [3, 3]:
                     # drag 与 tap 同拍：位置贴着 tap（真谱 15831 里 drag 与 tap 的 |x| 中位完全相同）
                     # 46.4% 比 tap 更靠外，27.9% 更靠内，25.8% 差不多
                     tap_col = int(np.clip(round(i), 0, ncol - 1))
                     if rng.random() < 0.45:
-                        off = rng.randint(3, 12)
+                        off = rng.randint(5, 13)
                         sgn = 1
                     else:
-                        # 至少 2 格(34px)：差一格(17px)在画面上是"半叠"，真谱从不这么写
-                        off = rng.randint(2, 7)
+                        # drag 图标约 5 格宽（84px），比 tap 的 2 格宽得多，所以最近也要隔 5 格
+                        off = rng.randint(5, 10)
                         sgn = -1
                     out_dir = np.sign(tap_col - h) or rng.choice([-1, 1])
                     cd = int(np.clip(round(tap_col + sgn * out_dir * off), 0, ncol - 1))
