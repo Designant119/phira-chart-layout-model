@@ -29,7 +29,7 @@ def go(tag, f):
                 d = abs(v[i]['x'] - v[j]['x'])
                 if d < 1:
                     same.append((b, v[i], v[j]))
-                elif d < 25:
+                elif d < 66:
                     near += 1
     print(tag, '同拍配对数 %d | 完全同x %d | 25px内 %d' % (tot_pairs, len(same), near))
     for b, a, c in same[:12]:

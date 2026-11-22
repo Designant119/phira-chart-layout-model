@@ -286,17 +286,10 @@ def main():
                 ch = int(np.clip(ch_raw, w4, ncol - 1 - w4))
                 ch = avoid(ch)
                 l = int(np.clip(ch - w4, 0, ncol - 1)); r = int(np.clip(ch + w4, 0, ncol - 1))
-                if rng.random() < 0.6 or h < 2:
-                    # 成对，第二颗错开 2 格(34px)。真谱里同一拍音符的间距只有"完全重合"和"≥25px"两种
-                    li2 = int(np.clip(l - 2, 0, ncol - 1))
-                    ri2 = int(np.clip(r + 2, 0, ncol - 1))
-                    pos = [l, li2, r, ri2]
-                else:
-                    # 真谱另一种四押是"内外两对"（如 -506,-168,168,506），仍是成对同列
-                    inn = int(np.clip(round(w4 * rng.uniform(0.35, 0.95)), 1, max(1, w4)))
-                    li = int(np.clip(ch - inn, 0, ncol - 1)); ri = int(np.clip(ch + inn, 0, ncol - 1))
-                    pos = [li, int(np.clip(li - 2, 0, ncol - 1)),
-                           ri, int(np.clip(ri + 2, 0, ncol - 1))]
+                # 四押 4 颗均分：渲染里 note 宽 24px = 4 格，间距必须够一个 note 宽才不叠
+                gap4 = max(4, w4 // 3)
+                pos = [l, int(np.clip(l + gap4, 0, ncol - 1)),
+                       int(np.clip(r - gap4, 0, ncol - 1)), r]
                 pos = pos[:k]; i = r if dirn > 0 else l
             seen, clean = set(), []
             allow_dup = (k == 4)  # 真谱四押就是左右各两颗严格同列重合
