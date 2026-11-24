@@ -262,11 +262,11 @@ def main():
                     cd = int(np.clip(round(tap_col + sgn * out_dir * off), 0, ncol - 1))
                     # 真谱里少数 drag 才落到中间带（13%），落到中带就多半往外推一档
                     if abs(cd - h) < 9 and rng.random() < 0.65:
-                        cd = int(np.clip(round(tap_col + out_dir * rng.randint(3, 12)), 0, ncol - 1))
+                        cd = int(np.clip(round(tap_col + out_dir * rng.randint(5, 12)), 0, ncol - 1))
                     pos = [cd if t == 3 else tap_col for t in types2]
                     i = tap_col
                 else:
-                    w2 = max(2, int(round(w2_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                    w2 = max(4, int(round(w2_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
                     ch_raw = (i if rng.random() < chord_follow_p else h) + bias
                     ch = int(np.clip(ch_raw, w2, ncol - 1 - w2))
                     ch = avoid(ch)
@@ -278,7 +278,7 @@ def main():
                         pos = [l, r]
                     i = r if dirn > 0 else l
             elif k == 3:
-                w3 = max(3, int(round(w3_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                w3 = max(4, int(round(w3_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
                 ch_raw = (i if rng.random() < chord_follow_p else h) + bias
                 ch = int(np.clip(ch_raw, w3, ncol - 1 - w3))
                 ch = avoid(ch)
@@ -286,7 +286,7 @@ def main():
                 mid = int(np.clip(ch + rng.choice([-1, 0, 0, 1]), 0, ncol - 1))
                 pos = [l, mid, r]; i = h
             else:
-                w4 = max(1, int(round(w4_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                w4 = max(4, int(round(w4_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
                 ch_raw = (i if rng.random() < chord_follow_p else h) + bias
                 ch = int(np.clip(ch_raw, w4, ncol - 1 - w4))
                 ch = avoid(ch)
@@ -300,7 +300,8 @@ def main():
                     pos = [l, l, r, r]
                 pos = pos[:k]; i = r if dirn > 0 else l
             seen, clean = set(), []
-            allow_dup = (k == 4)  # 真谱四押就是左右各两颗严格同列重合
+            # 真谱里同列重合是常规写法（四押左右各两颗、双押压成一点、三押偶尔塌成一点），不能被去重逻辑推开一格
+            allow_dup = (k >= 2)
             for p in pos:
                 p = int(np.clip(p, 0, ncol - 1))
                 if p in seen and not allow_dup:
