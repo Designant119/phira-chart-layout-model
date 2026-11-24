@@ -423,12 +423,28 @@ def main():
     _jl['numOfNotes'] = len(_all)
     _jl['father'] = -1
     _jl['isCover'] = 1
+    # 速度曲线沿用原谱：hold 长度 = 时间差对 speed 的积分，压成常量会让密集段纵向挤成一坨
+    _spd = []
+    for _l in d['judgeLineList']:
+        for _lyr in (_l.get('eventLayers') or []):
+            for e in (_lyr or {}).get('speedEvents', []) or []:
+                if isinstance(e, dict) and e.get('startTime'):
+                    _spd.append((tuple(e['startTime'][:3]), float(e.get('start', 10.0))))
+    _spd.sort(key=lambda x: (x[0][0], x[0][1] / max(1, x[0][2])))
+    _spd_evs, _last = [], None
+    for _t, _v in _spd:
+        if _last is not None and abs(_v - _last) < 1e-9:
+            continue
+        _last = _v
+        _spd_evs.append(_ev(_v, _v, list(_t), list(_t)))
+    if not _spd_evs:
+        _spd_evs = [_ev(10.0, 10.0, [0, 0, 1], [9999999, 0, 1])]
     _jl['eventLayers'] = [{
         "alphaEvents": [_ev(255, 255, [0, 0, 1], [9999999, 0, 1])],
         "moveXEvents": [_ev(0.0, 0.0, [0, 0, 1], [9999999, 0, 1])],
         "moveYEvents": [_ev(0.0, 0.0, [0, 0, 1], [9999999, 0, 1])],
         "rotateEvents": [_ev(0.0, 0.0, [0, 0, 1], [9999999, 0, 1])],
-        "speedEvents": [_ev(10.0, 10.0, [0, 0, 1], [9999999, 0, 1])]}]
+        "speedEvents": _spd_evs}]
     d['judgeLineList'] = [_jl]
     json.dump(d, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False)
 
