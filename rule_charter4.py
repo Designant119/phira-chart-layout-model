@@ -425,35 +425,42 @@ def main():
         l['yControl'] = static_y
         l['sizeControl'] = static_size
         l['skewControl'] = static_skew
-    # === 不沿用原谱判定线：所有音符收进我们自己的一条水平主线 ===
+    # === 不沿用原谱判定线：自造两条线，按小段轮流挂音，避免所有音挤在一条带上 ===
     _jl = d['judgeLineList'][0]
     _all = []
     for _l in d['judgeLineList']:
         _all.extend(_l.get('notes', []) or [])
     _all.sort(key=lambda n: n['startTime'][0] + n['startTime'][1] / max(1, n['startTime'][2]))
-    _jl['notes'] = _all
-    _jl['numOfNotes'] = len(_all)
-    _jl['father'] = -1
-    _jl['isCover'] = 1
-    # 速度曲线沿用原谱：hold 长度 = 时间差对 speed 的积分，压成常量会让密集段纵向挤成一坨
-    _spd = sorted(orig_speed, key=lambda x: (x[0][0], x[0][1] / max(1, x[0][2])))
-    _spd_evs, _last = [], None
-    for _t, _v in _spd:
-        if _v < 1.0:  # 原谱里 speed=0 是停线效果，单线这里用会把音符冻住
-            continue
-        if _last is not None and abs(_v - _last) < 1e-9:
-            continue
-        _last = _v
-        _spd_evs.append(_ev(_v, _v, list(_t), list(_t)))
-    if not _spd_evs:
-        _spd_evs = [_ev(10.0, 10.0, [0, 0, 1], [9999999, 0, 1])]
-    _jl['eventLayers'] = [{
-        "alphaEvents": [_ev(255, 255, [0, 0, 1], [9999999, 0, 1])],
-        "moveXEvents": [_ev(0.0, 0.0, [0, 0, 1], [9999999, 0, 1])],
-        "moveYEvents": [_ev(0.0, 0.0, [0, 0, 1], [9999999, 0, 1])],
-        "rotateEvents": [_ev(0.0, 0.0, [0, 0, 1], [9999999, 0, 1])],
-        "speedEvents": _spd_evs}]
-    d['judgeLineList'] = [_jl]
+
+    def _mkline(tmpl, yoff, ang):
+        return {
+            "Group": 0, "Name": "own", "Texture": "line.png",
+            "alphaControl": [{"alpha": 1.0, "easing": 1, "x": 0.0}, {"alpha": 1.0, "easing": 1, "x": 9999999.0}],
+            "bpmfactor": 1.0,
+            "extended": tmpl.get('extended', {"inclineEvents": []}),
+            "father": -1, "isCover": 1, "notes": [], "numOfNotes": 0,
+            "eventLayers": [{
+                "alphaEvents": [_ev(255, 255, [0, 0, 1], [9999999, 0, 1])],
+                "moveXEvents": [_ev(0.0, 0.0, [0, 0, 1], [9999999, 0, 1])],
+                "moveYEvents": [_ev(float(yoff), float(yoff), [0, 0, 1], [9999999, 0, 1])],
+                "rotateEvents": [_ev(float(ang), float(ang), [0, 0, 1], [9999999, 0, 1])],
+                "speedEvents": [_ev(10.0, 10.0, [0, 0, 1], [9999999, 0, 1])]}],
+            "zOrder": tmpl.get('zOrder', 0),
+            "posControl": [{"easing": 1, "pos": 1.0, "x": 0.0}, {"easing": 1, "pos": 1.0, "x": 9999999.0}],
+            "sizeControl": [{"easing": 1, "size": 1.0, "x": 0.0}, {"easing": 1, "size": 1.0, "x": 9999999.0}],
+            "skewControl": [{"easing": 1, "skew": 0.0, "x": 0.0}, {"easing": 1, "skew": 0.0, "x": 9999999.0}],
+            "yControl": [{"easing": 1, "x": 0.0, "y": 1.0}, {"easing": 1, "x": 9999999.0, "y": 1.0}],
+        }
+    _LNS = [_mkline(_jl, 0.0, 0.0), _mkline(_jl, -210.0, -9.0)]
+    # 按"连续 10 拍"切小段轮流换线：同屏大约两条线都在，但每条各承担一半音，密度降一半
+    _grp = 10
+    for _i, _n in enumerate(_all):
+        _t = _n['startTime']; _b = _t[0] + _t[1] / max(1, _t[2])
+        _line = int(np.floor(_b * 2)) % 2
+        _LNS[_line]['notes'].append(_n)
+    for _l in _LNS:
+        _l['numOfNotes'] = len(_l['notes'])
+    d['judgeLineList'] = _LNS
     json.dump(d, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False)
 
     # 统计口径与 full_baseline 对齐：单音序列、非零步算换向；同列率也在单音序列上
