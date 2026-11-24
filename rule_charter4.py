@@ -329,6 +329,7 @@ def main():
                 pos = pos[:k]; i = r if dirn > 0 else l
             if m2 and sweep_col is None and not any(t == 3 for t in [x['type'] for x in items]):
                 # v2 模型直接给每颗的位置，颗数不够就用最后一个位置叠着（重合本来就是合法写法）
+                # 有 drag 的拍不进模型：实测交给模型后 drag 会挤到中间带（31% vs 真谱 18%），drag 的位置规律和 tap 不是一回事
                 pos = [int(np.clip(round((m2[min(j, len(m2) - 1)] + HALF) / colw), 0, ncol - 1))
                        for j in range(k)]
             seen, clean = set(), []
