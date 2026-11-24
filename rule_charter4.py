@@ -42,6 +42,13 @@ def main():
 
     rng = random.Random(a.seed)
     d = json.load(open(a.chart, encoding='utf-8'))
+    # 原谱的速度曲线要在被清空之前存下来：hold 长度和音符纵向间距都靠它
+    orig_speed = []
+    for _jl in d['judgeLineList']:
+        for _lyr in (_jl.get('eventLayers') or []):
+            for e in (_lyr or {}).get('speedEvents', []) or []:
+                if isinstance(e, dict) and e.get('startTime'):
+                    orig_speed.append((tuple(e['startTime'][:3]), float(e.get('start', 10.0))))
     _, psegs = parse_chart(d)
 
     def b2s(beat):
@@ -424,15 +431,11 @@ def main():
     _jl['father'] = -1
     _jl['isCover'] = 1
     # 速度曲线沿用原谱：hold 长度 = 时间差对 speed 的积分，压成常量会让密集段纵向挤成一坨
-    _spd = []
-    for _l in d['judgeLineList']:
-        for _lyr in (_l.get('eventLayers') or []):
-            for e in (_lyr or {}).get('speedEvents', []) or []:
-                if isinstance(e, dict) and e.get('startTime'):
-                    _spd.append((tuple(e['startTime'][:3]), float(e.get('start', 10.0))))
-    _spd.sort(key=lambda x: (x[0][0], x[0][1] / max(1, x[0][2])))
+    _spd = sorted(orig_speed, key=lambda x: (x[0][0], x[0][1] / max(1, x[0][2])))
     _spd_evs, _last = [], None
     for _t, _v in _spd:
+        if _v < 1.0:  # 原谱里 speed=0 是停线效果，单线这里用会把音符冻住
+            continue
         if _last is not None and abs(_v - _last) < 1e-9:
             continue
         _last = _v
