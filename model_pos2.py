@@ -57,14 +57,17 @@ def build(notes, seed=0, ckpt='segnet2.pt'):
             lg = model(x, x[:, :, 9])
             prob = torch.softmax(lg[0], dim=-1)  # (T,4,81)
             samp = torch.multinomial(prob.reshape(-1, NB), 1).reshape(-1, MAXK)
-            # 第二轮：把第一轮预测的上一拍位置喂回去，让序列结构（同列/对侧）真正生效
-            F2 = F.copy()
-            for i in range(1, len(F2)):
-                F2[i, 10] = float(g2x(int(samp[i - 1, 0]))) / HALF
-            x2 = torch.from_numpy(F2[None])
-            lg = model(x2, x2[:, :, 9])
-            prob = torch.softmax(lg[0], dim=-1)
-            samp = torch.multinomial(prob.reshape(-1, NB), 1).reshape(-1, MAXK)
+            # 反复迭代：每一轮把上一轮预测的上一拍位置喂回去。
+            # 只做一轮时 prev 大部分是 0，模型会退化到全往同一格堆（实测单列堆到 1012 颗），
+            # 迭代 3 轮让"同列 / 对侧"的序列结构真正收敛出来
+            for _ in range(3):
+                F2 = F.copy()
+                for i in range(1, len(F2)):
+                    F2[i, 10] = float(g2x(int(samp[i - 1, 0]))) / HALF
+                x2 = torch.from_numpy(F2[None])
+                lg = model(x2, x2[:, :, 9])
+                prob = torch.softmax(lg[0], dim=-1)
+                samp = torch.multinomial(prob.reshape(-1, NB), 1).reshape(-1, MAXK)
             for i in range(len(seq[lo:hi])):
                 b = round(seq[lo + i]['b'], 3)
                 k = int(min(seq[lo + i]['n'], MAXK))

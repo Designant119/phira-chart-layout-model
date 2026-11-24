@@ -148,8 +148,9 @@ def main():
     print('训练 %d 段 / 验证 %d 段（按曲目切分）' % (len(tr), len(va)))
 
     model = SegNet2()
-    if os.environ.get('RESUME') and os.path.exists('segnet2.pt'):
-        model.load_state_dict(torch.load('segnet2.pt', map_location='cpu'))
+    _ck = os.environ.get('CKPT_OUT', 'segnet2.pt')
+    if os.environ.get('RESUME') and os.path.exists(_ck):
+        model.load_state_dict(torch.load(_ck, map_location='cpu'))
         print('  从 segnet2.pt 热启动', flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
     ce = nn.CrossEntropyLoss(reduction='none', label_smoothing=0.05)
@@ -162,6 +163,11 @@ def main():
         for it in range(0, len(tr), BS):
             rs = tr[it:it + BS]
             Fb, Yb, Mb = batchify(rs)
+            # prev 维必须加噪声：训练时它是真值，模型会走"直接复制上一拍"的捷径，
+            # 推理时喂的是自己上一拍预测，误差一滚就整段塌成一列（实测同列率冲到 62%）
+            pv = Fb[:, :, 10]
+            keep = (torch.rand_like(pv) > 0.3).float()
+            Fb[:, :, 10] = (pv + torch.randn_like(pv) * 0.04) * keep
             lg = model(Fb, Fb[:, :, 9])
             loss = (ce(lg.reshape(-1, NB), Yb.reshape(-1)) * Mb.reshape(-1)).sum() / Mb.sum()
             opt.zero_grad(); loss.backward(); opt.step()
