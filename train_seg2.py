@@ -146,6 +146,9 @@ def main():
     print('训练 %d 段 / 验证 %d 段（按曲目切分）' % (len(tr), len(va)))
 
     model = SegNet2()
+    if os.environ.get('RESUME') and os.path.exists('segnet2.pt'):
+        model.load_state_dict(torch.load('segnet2.pt', map_location='cpu'))
+        print('  从 segnet2.pt 热启动', flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
     ce = nn.CrossEntropyLoss(reduction='none', label_smoothing=0.05)
     BS = 128
@@ -165,7 +168,7 @@ def main():
                 print('  ep%d %d/%d loss %.4f' % (ep, it, len(tr), tot / max(1, nb)), flush=True)
         print('ep%d 训练损失 %.4f' % (ep, tot / max(1, nb)), flush=True)
         evaluate(model, va, '  验证')
-        torch.save(model.state_dict(), 'segnet2.pt')
+        torch.save(model.state_dict(), os.environ.get('CKPT_OUT', 'segnet2.pt'))
         print('  已存 segnet2.pt', flush=True)
 
 

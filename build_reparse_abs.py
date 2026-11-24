@@ -82,6 +82,9 @@ def one(zp, outdir):
     fid = os.path.basename(zp).split('_', 1)[0]
     if not fid.isdigit():
         return None
+    # 断点续跑：已经解析过就跳过
+    if os.path.exists(os.path.join(outdir, 'parsed', fid + '.json')):
+        return (fid, 'SKIP', '', 0, 0)
     try:
         with zipfile.ZipFile(zp) as zf:
             ch = pick_chart(zf)

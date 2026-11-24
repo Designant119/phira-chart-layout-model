@@ -78,7 +78,7 @@ def main():
     mpos2 = {}
     if getattr(a, 'use_model2', False):
         import model_pos2
-        mpos2 = model_pos2.build(notes, seed=a.seed)
+        mpos2 = model_pos2.build(notes, seed=a.seed, ckpt=os.environ.get('M2_CKPT', 'segnet2.pt'))
         print('# v2 模型给出 %d 拍（每拍多颗）' % len(mpos2), flush=True)
     if a.use_model:
         import model_pos
@@ -221,7 +221,12 @@ def main():
             if k == 1:
                 is_drag = items[0]['type'] == 3
                 mpx = mpos.get(round(bt, 3)) if mpos else None
-                if mpx is not None and sweep_col is None and not is_drag:
+                m2x = m2[0] if (m2 and len(m2) > 0) else None
+                if m2x is not None and sweep_col is None and not is_drag:
+                    # v2 模型管全部单音：绝对坐标已对齐真谱分布，不再做径向拉伸
+                    c = int(np.clip(round((m2x + HALF) / colw), 0, ncol - 1))
+                    i = c
+                elif mpx is not None and sweep_col is None and not is_drag:
                     # 单音位置由段级模型决定（模型只看节奏指纹，不看原谱位置）
                     c0 = int(np.clip(round((mpx + HALF) / colw), 0, ncol - 1))
                     # 模型采样偏中间：真谱 21% 的音在 |x|>400，模型只有 11%，做一次径向拉伸把外侧拉开
