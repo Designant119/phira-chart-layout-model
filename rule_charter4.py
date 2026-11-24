@@ -404,6 +404,23 @@ def main():
         l['yControl'] = static_y
         l['sizeControl'] = static_size
         l['skewControl'] = static_skew
+    # === 不沿用原谱判定线：所有音符收进我们自己的一条水平主线 ===
+    _jl = d['judgeLineList'][0]
+    _all = []
+    for _l in d['judgeLineList']:
+        _all.extend(_l.get('notes', []) or [])
+    _all.sort(key=lambda n: n['startTime'][0] + n['startTime'][1] / max(1, n['startTime'][2]))
+    _jl['notes'] = _all
+    _jl['numOfNotes'] = len(_all)
+    _jl['father'] = -1
+    _jl['isCover'] = 1
+    _jl['eventLayers'] = [{
+        "alphaEvents": [_ev(255, 255, [0, 0, 1], [9999999, 0, 1])],
+        "moveXEvents": [_ev(0.0, 0.0, [0, 0, 1], [9999999, 0, 1])],
+        "moveYEvents": [_ev(0.0, 0.0, [0, 0, 1], [9999999, 0, 1])],
+        "rotateEvents": [_ev(0.0, 0.0, [0, 0, 1], [9999999, 0, 1])],
+        "speedEvents": [_ev(10.0, 10.0, [0, 0, 1], [9999999, 0, 1])]}]
+    d['judgeLineList'] = [_jl]
     json.dump(d, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False)
 
     # 统计口径与 full_baseline 对齐：单音序列、非零步算换向；同列率也在单音序列上
