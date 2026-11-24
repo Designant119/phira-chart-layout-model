@@ -63,11 +63,19 @@ def fp_of(seq, lo, hi, fid):
     for s in seg:
         xs = sorted(s['xs'])[:4]
         per.append([round(x, 1) for x in xs])
+    # 上一拍落在哪（序列结构：真谱 28% 同列、31% 对侧，全靠这一维喂给模型）
+    prev = []
+    for k in range(len(seg)):
+        if k == 0:
+            px = sorted(seq[lo - 1]['xs']) if lo - 1 >= 0 else []
+        else:
+            px = sorted(seg[k - 1]['xs'])
+        prev.append(round(float(np.median(px)), 1) if px else None)
     return {
         'fid': fid, 'seg': 0,
         'n': int(sum(chord)), 'beats': len(seg),
         'chord': chord, 'dflag': dflag, 'iv': iv,
-        'per': per,
+        'per': per, 'prev': prev,
         'span': round(max((max(p) - min(p) for p in per if p), default=0.0), 1),
     }
 

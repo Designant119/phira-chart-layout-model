@@ -21,6 +21,8 @@ _MODEL = None
 
 def _load(ckpt='segnet2.pt'):
     global _MODEL
+    if not os.path.isabs(ckpt):
+        ckpt = os.path.join(os.path.dirname(os.path.abspath(__file__)), ckpt)
     if _MODEL is None:
         m = SegNet2()
         m.load_state_dict(torch.load(ckpt, map_location='cpu'))
@@ -48,9 +50,20 @@ def build(notes, seed=0, ckpt='segnet2.pt'):
             if r['beats'] > MAXLEN:
                 continue
             F, _, _ = featurize(r)
+            prev_real = F[:, 10].copy()
+            F[:, 10] = 0.0
+            F[0, 10] = prev_real[0]   # 段外上一拍（推理时自己上一段就是它，不泄露）
             x = torch.from_numpy(F[None])
             lg = model(x, x[:, :, 9])
             prob = torch.softmax(lg[0], dim=-1)  # (T,4,81)
+            samp = torch.multinomial(prob.reshape(-1, NB), 1).reshape(-1, MAXK)
+            # 第二轮：把第一轮预测的上一拍位置喂回去，让序列结构（同列/对侧）真正生效
+            F2 = F.copy()
+            for i in range(1, len(F2)):
+                F2[i, 10] = float(g2x(int(samp[i - 1, 0]))) / HALF
+            x2 = torch.from_numpy(F2[None])
+            lg = model(x2, x2[:, :, 9])
+            prob = torch.softmax(lg[0], dim=-1)
             samp = torch.multinomial(prob.reshape(-1, NB), 1).reshape(-1, MAXK)
             for i in range(len(seq[lo:hi])):
                 b = round(seq[lo + i]['b'], 3)

@@ -22,7 +22,7 @@ NB = 81
 HALF = 675.0
 MAXLEN = 64
 MAXK = 4
-DIM = 10
+DIM = 11
 
 
 def x2g(x):
@@ -50,6 +50,8 @@ def featurize(r):
         F[i, 7] = i / max(1, n - 1)
         F[i, 8] = c / 4.0
         F[i, 9] = 1.0
+        pv = r['prev'][i] if ('prev' in r and i < len(r['prev'])) else None
+        F[i, 10] = 0.0 if pv is None else float(pv) / HALF
         xs = per[i][:MAXK] if i < len(per) else []
         for j, x in enumerate(xs):
             Y[i, j] = x2g(x)
