@@ -216,7 +216,11 @@ def main():
                 mpx = mpos.get(round(bt, 3)) if mpos else None
                 if mpx is not None and sweep_col is None and not is_drag:
                     # 单音位置由段级模型决定（模型只看节奏指纹，不看原谱位置）
-                    c = int(np.clip(round((mpx + HALF) / colw), 0, ncol - 1))
+                    c0 = int(np.clip(round((mpx + HALF) / colw), 0, ncol - 1))
+                    # 模型采样偏中间：真谱 21% 的音在 |x|>400，模型只有 11%，做一次径向拉伸把外侧拉开
+                    u = (c0 - h) / half
+                    u = np.sign(u) * (abs(u) ** 0.78)
+                    c = int(np.clip(round(h + u * half), 0, ncol - 1))
                     i = c
                 elif sweep_col is not None:
                     c = sweep_col
