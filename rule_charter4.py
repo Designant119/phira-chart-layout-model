@@ -38,6 +38,7 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--seed', type=int, default=11)
     ap.add_argument('--use-model', action='store_true', help='单音位置改用段级模型')
+    ap.add_argument('--use-model2', action='store_true', help='用 v2 段级模型，一拍多颗')
     a = ap.parse_args()
 
     rng = random.Random(a.seed)
@@ -74,6 +75,11 @@ def main():
                           'x': float(n.get('positionX', 0.0)),
                           'type': int(n.get('type', 1))})
     mpos = {}
+    mpos2 = {}
+    if getattr(a, 'use_model2', False):
+        import model_pos2
+        mpos2 = model_pos2.build(notes, seed=a.seed)
+        print('# v2 模型给出 %d 拍（每拍多颗）' % len(mpos2), flush=True)
     if a.use_model:
         import model_pos
         mpos = model_pos.build(notes, seed=a.seed)
@@ -159,6 +165,7 @@ def main():
 
         for bt in seg:
             items = groups[bt]
+            m2 = mpos2.get(round(bt, 3)) if mpos2 else None
             k = len(items)
             cur_t = items[0]['t']
             cool = 1.0 * med_iv
@@ -315,6 +322,10 @@ def main():
                 else:
                     pos = [l, l, r, r]
                 pos = pos[:k]; i = r if dirn > 0 else l
+            if m2 and sweep_col is None and not any(t == 3 for t in [x['type'] for x in items]):
+                # v2 模型直接给每颗的位置，颗数不够就用最后一个位置叠着（重合本来就是合法写法）
+                pos = [int(np.clip(round((m2[min(j, len(m2) - 1)] + HALF) / colw), 0, ncol - 1))
+                       for j in range(k)]
             seen, clean = set(), []
             # 真谱里同列重合是常规写法（四押左右各两颗、双押压成一点、三押偶尔塌成一点），不能被去重逻辑推开一格
             allow_dup = (k >= 2)
