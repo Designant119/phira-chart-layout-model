@@ -135,13 +135,18 @@ def main():
     # 多押半宽（px）按全量分层中位插值：2押随密度略收，3/4押随密度加宽
     # 锚点 稀疏 iv=0.200 / 密集 iv=0.083，全宽中位 → 半宽 px
     td = min(max((0.200 - med_iv) / (0.200 - 0.083), 0.0), 1.0)
-    colw = 2 * HALF / (NB - 1)  # 每格 px
+    colw = 2 * HALF / (NB - 1)  # 每格的 RPE 坐标宽度
+    # phira 源码 NOTE_WIDTH_RATIO_BASE=0.13175016，note 画出来的宽是屏宽 13.17%：
+    # 480px 屏下 63px，换算到 RPE 是 177 坐标，也就是 10.5 格。以前把 16.875 当 px 用，导致所有 px 目标缩水 2.8 倍
+    PX_PER_COL = 2 * HALF / (NB - 1) * 0.3556  # 1 格 = 6.0px
+    NOTE_PX = 0.13175016 * 480.0 * 1.0        # 一个 note 的实际宽度（px）
     # 本曲横向尺度：取本曲 tap 的 |x| 中位（真谱里多押半宽基本就等于本曲音符的典型 |x|）
     tap_xs = [abs(r['x']) for r in notes if r.get('type') == 1 and abs(r.get('x', 0)) > 1]
     tap_med = float(np.median(tap_xs)) if len(tap_xs) >= 20 else 270.0
-    w2_px = (0.83 - 0.10 * td) * tap_med
-    w3_px = (0.94 + 0.21 * td) * tap_med
-    w4_px = (1.00 + 0.25 * td) * tap_med
+    # 真谱 15831 实测：2押跨度中位180px(半宽90)、3押270(半宽135)、4押180(半宽90)
+    w2_px = 90.0 * (tap_med / 253.0) * (1.0 - 0.12 * td)
+    w3_px = 135.0 * (tap_med / 253.0) * (1.0 + 0.10 * td)
+    w4_px = 90.0 * (tap_med / 253.0) * (1.0 + 0.10 * td)
     mag_c = tgt_px / colw  # drag 横向尺度的格数：本曲目标步长换算成格，drag 就落在这个量级附近
     print(f'# 间隔中位 {med_iv:.3f}s 目标步长 {tgt_px:.0f}px 缩放 {step_scale:.2f} 同列概率 {scp:.2f} 换向 {flip_p:.2f} 密度档 {td:.2f}')
 
@@ -259,21 +264,21 @@ def main():
                     # 46.4% 比 tap 更靠外，27.9% 更靠内，25.8% 差不多
                     tap_col = int(np.clip(round(i), 0, ncol - 1))
                     if rng.random() < 0.45:
-                        off = rng.randint(5, 13)
+                        off = rng.randint(11, 20)
                         sgn = 1
                     else:
                         # drag 图标约 5 格宽（84px），比 tap 的 2 格宽得多，所以最近也要隔 5 格
-                        off = rng.randint(5, 10)
+                        off = rng.randint(11, 16)
                         sgn = -1
                     out_dir = np.sign(tap_col - h) or rng.choice([-1, 1])
                     cd = int(np.clip(round(tap_col + sgn * out_dir * off), 0, ncol - 1))
                     # 真谱里少数 drag 才落到中间带（13%），落到中带就多半往外推一档
                     if abs(cd - h) < 9 and rng.random() < 0.65:
-                        cd = int(np.clip(round(tap_col + out_dir * rng.randint(5, 12)), 0, ncol - 1))
+                        cd = int(np.clip(round(tap_col + out_dir * rng.randint(11, 18)), 0, ncol - 1))
                     pos = [cd if t == 3 else tap_col for t in types2]
                     i = tap_col
                 else:
-                    w2 = max(4, int(round(w2_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                    w2 = max(11, int(round(w2_px / PX_PER_COL + rng.choice([-0.5, 0, 0, 0.5]))))
                     ch_raw = (i if rng.random() < chord_follow_p else h) + bias
                     ch = int(np.clip(ch_raw, w2, ncol - 1 - w2))
                     ch = avoid(ch)
@@ -285,7 +290,7 @@ def main():
                         pos = [l, r]
                     i = r if dirn > 0 else l
             elif k == 3:
-                w3 = max(4, int(round(w3_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                w3 = max(11, int(round(w3_px / PX_PER_COL + rng.choice([-0.5, 0, 0, 0.5]))))
                 ch_raw = (i if rng.random() < chord_follow_p else h) + bias
                 ch = int(np.clip(ch_raw, w3, ncol - 1 - w3))
                 ch = avoid(ch)
@@ -293,13 +298,13 @@ def main():
                 mid = int(np.clip(ch + rng.choice([-1, 0, 0, 1]), 0, ncol - 1))
                 pos = [l, mid, r]; i = h
             else:
-                w4 = max(4, int(round(w4_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
+                w4 = max(11, int(round(w4_px / PX_PER_COL + rng.choice([-0.5, 0, 0, 0.5]))))
                 ch_raw = (i if rng.random() < chord_follow_p else h) + bias
                 ch = int(np.clip(ch_raw, w4, ncol - 1 - w4))
                 ch = avoid(ch)
                 l = int(np.clip(ch - w4, 0, ncol - 1)); r = int(np.clip(ch + w4, 0, ncol - 1))
                 # 真谱四押 58 拍里 50 拍是左右各两颗完全重合（视觉只有两个点），只有 14% 摊开成四颗
-                gap4 = max(4, w4 // 3)
+                gap4 = max(11, w4 // 3)
                 if rng.random() < 0.14:
                     pos = [l, int(np.clip(l + gap4, 0, ncol - 1)),
                            int(np.clip(r - gap4, 0, ncol - 1)), r]
