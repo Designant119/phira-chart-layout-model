@@ -271,7 +271,12 @@ def main():
                     ch = int(np.clip(ch_raw, w2, ncol - 1 - w2))
                     ch = avoid(ch)
                     l = int(np.clip(ch - w2, 0, ncol - 1)); r = int(np.clip(ch + w2, 0, ncol - 1))
-                    pos = [l, r]; i = r if dirn > 0 else l
+                    # 真谱双押有 10% 是两颗压在同一列（当成一个重音点）
+                    if rng.random() < 0.10:
+                        pos = [ch, ch]
+                    else:
+                        pos = [l, r]
+                    i = r if dirn > 0 else l
             elif k == 3:
                 w3 = max(3, int(round(w3_px / colw + rng.choice([-0.5, 0, 0, 0.5]))))
                 ch_raw = (i if rng.random() < chord_follow_p else h) + bias
@@ -286,10 +291,13 @@ def main():
                 ch = int(np.clip(ch_raw, w4, ncol - 1 - w4))
                 ch = avoid(ch)
                 l = int(np.clip(ch - w4, 0, ncol - 1)); r = int(np.clip(ch + w4, 0, ncol - 1))
-                # 四押 4 颗均分：渲染里 note 宽 24px = 4 格，间距必须够一个 note 宽才不叠
+                # 真谱四押 58 拍里 50 拍是左右各两颗完全重合（视觉只有两个点），只有 14% 摊开成四颗
                 gap4 = max(4, w4 // 3)
-                pos = [l, int(np.clip(l + gap4, 0, ncol - 1)),
-                       int(np.clip(r - gap4, 0, ncol - 1)), r]
+                if rng.random() < 0.14:
+                    pos = [l, int(np.clip(l + gap4, 0, ncol - 1)),
+                           int(np.clip(r - gap4, 0, ncol - 1)), r]
+                else:
+                    pos = [l, l, r, r]
                 pos = pos[:k]; i = r if dirn > 0 else l
             seen, clean = set(), []
             allow_dup = (k == 4)  # 真谱四押就是左右各两颗严格同列重合
