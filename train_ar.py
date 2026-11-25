@@ -165,8 +165,20 @@ def main():
     for ep in range(EPOCH):
         model.train(); random.shuffle(tridx)
         tot = 0.; nb = 0
+        SS_EP = int(os.environ.get('SS_EP', '3'))
+        SS_MAX = float(os.environ.get('SS_MAX', '1.0'))
         for it in range(0, len(tridx), BS):
             F, PB, Y, M = build_batch(songs, tridx[it:it + BS])
+            rate = 0.0 if ep < SS_EP else min(SS_MAX, (ep - SS_EP + 1) / 3.0)
+            if rate > 0:
+                # 自采样：拿模型自己的采样结果当上一音，治 teacher forcing 后遗症
+                with torch.no_grad():
+                    lg1, _ = model(F, PB)
+                    pr = torch.softmax(lg1, -1).reshape(-1, NB)
+                    pred = torch.multinomial(pr, 1).reshape(PB.shape)
+                    mix = torch.rand(PB.shape) < rate
+                    PB = PB.clone()
+                    PB[:, 1:] = torch.where(mix[:, 1:], pred[:, :-1], PB[:, 1:])
             lg, _ = model(F, PB)
             loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
             opt.zero_grad(); loss.backward(); opt.step()
