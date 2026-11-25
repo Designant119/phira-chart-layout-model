@@ -79,7 +79,7 @@ def main():
     mpos2 = {}
     if getattr(a, 'use_ar', False):
         import model_pos_ar
-        mpos2 = model_pos_ar.build(notes, seed=a.seed, temp=float(os.environ.get('AR_TEMP', '1.0')))
+        mpos2 = model_pos_ar.build(notes, seed=a.seed, ckpt=os.environ.get('AR_CKPT', 'arnet.pt'), temp=float(os.environ.get('AR_TEMP', '1.0')))
         print('# AR 模型给出 %d 拍' % len(mpos2), flush=True)
     if getattr(a, 'use_model2', False):
         import model_pos2

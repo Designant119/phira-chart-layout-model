@@ -91,15 +91,11 @@ def build_batch(songs, idx, noise=0.15):
         M[j, :t] = 1.0
         PB[j, :t] = pb
         if noise > 0:
-            r = np.random.rand(t)
-            # 一部分音把上一位置替换成随机位置，模拟推理时的累积误差
-            repl = r < noise
-            if repl.any():
-                PB[j, :t][repl] = np.random.randint(0, NB, int(repl.sum()))
-            # 再叠一点抖动：把 bucket 左右随机偏一格
-            jitter = (np.random.rand(t) < noise * 2)
+            # 只做小幅抖动，不再把 prev 随机替换成任意格：
+            # 随机替换会教模型“prev 不可信就回中间最稳”，推理时踩到 x=0 就有 39% 概率原地不动
+            jitter = (np.random.rand(t) < noise)
             if jitter.any():
-                PB[j, :t][jitter] = np.clip(PB[j, :t][jitter] + np.random.randint(-1, 2, int(jitter.sum())), 0, NB)
+                PB[j, :t][jitter] = np.clip(PB[j, :t][jitter] + np.random.randint(-6, 7, int(jitter.sum())), 0, NB)
     return (torch.from_numpy(F), torch.from_numpy(PB), torch.from_numpy(Y), torch.from_numpy(M))
 
 
@@ -150,7 +146,7 @@ def main():
     a = ap.parse_args()
     files = sorted(glob.glob(a.pars + '/*.json'))
     random.seed(0); random.shuffle(files)
-    files = files[:a.limit]
+    files = files[:a.limit] if a.limit > 0 else files
     print('曲目', len(files), flush=True)
     songs = load_data(files)
     print('可用', len(songs), '总音', sum(len(s[0]) for s in songs), flush=True)
