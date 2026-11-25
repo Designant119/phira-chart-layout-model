@@ -11,6 +11,8 @@ import glob
 import random
 import argparse
 
+import math
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -19,7 +21,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from train_ar import NB, DIM, PEB, MAXLEN, feats, load_song, x2g, g2x
 
-SEG = 256
+SEG = 1024
 
 
 class TFAR(nn.Module):
@@ -27,7 +29,8 @@ class TFAR(nn.Module):
         super().__init__()
         self.prev = nn.Embedding(NB + 1, PEB)
         self.inp = nn.Linear(DIM + PEB, h)
-        self.pos = nn.Parameter(torch.zeros(1, SEG, h))
+        # 可学习位置编码：扩到 1024，训练用整曲（不切段），跟推理的绝对位置口径一致
+        self.pos = nn.Parameter(torch.zeros(1, 1024, h))
         nn.init.normal_(self.pos, std=.02)
         enc = nn.TransformerEncoderLayer(h, nhead, h * 2, batch_first=True, dropout=.2)
         self.enc = nn.TransformerEncoder(enc, layers)
@@ -57,7 +60,7 @@ def seg_songs(paths, limit, seg=SEG):
         y = np.array([x2g(z['x_abs']) for z in ns], np.int64)
         for lo in range(0, len(ns), seg):
             hi = min(lo + seg, len(ns))
-            if hi - lo < 4:
+            if hi - lo < 4 or lo > 0:
                 continue
             pb = np.full(hi - lo, NB, np.int64)
             pb[1:] = y[lo:hi - 1]
@@ -99,7 +102,7 @@ def main():
     model = TFAR()
     opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
     ce = nn.CrossEntropyLoss(reduction='none', label_smoothing=.03)
-    BS = 16
+    BS = 8
     EPOCH = int(os.environ.get('EPOCH', 4))
     for ep in range(EPOCH):
         model.train(); random.shuffle(tridx)
@@ -116,8 +119,8 @@ def main():
         model.eval()
         with torch.no_grad():
             vl = 0.; vn = 0; xs = []
-            for it in range(0, len(vidx), 64):
-                F, PB, Y, M, pad = batchify(segs, vidx[it:it + 64], noise=0)
+            for it in range(0, len(vidx), 8):
+                F, PB, Y, M, pad = batchify(segs, vidx[it:it + 8], noise=0)
                 lg = model(F, PB, pad)
                 loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
                 vl += float(loss); vn += 1

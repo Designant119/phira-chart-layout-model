@@ -12,7 +12,7 @@ from train_ar import NB, feats, g2x
 from train_ar_tf import TFAR
 
 
-def _load(ckpt='tfar.pt'):
+def _load(ckpt='tfar3.pt'):
     if not os.path.isabs(ckpt):
         ckpt = os.path.join(os.path.dirname(os.path.abspath(__file__)), ckpt)
     m = TFAR()
@@ -21,7 +21,7 @@ def _load(ckpt='tfar.pt'):
     return m
 
 
-def build(notes, seed=0, ckpt='tfar.pt', temp=1.0):
+def build(notes, seed=0, ckpt='tfar3.pt', temp=1.0):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     m = _load(ckpt)
@@ -33,9 +33,9 @@ def build(notes, seed=0, ckpt='tfar.pt', temp=1.0):
     out = {}
     prev = NB
     with torch.no_grad():
-        W = 255
         for i in range(len(ns)):
-            lo = max(0, i - W)
+            # 完整前缀 + 绝对位置编码，跟训练时的位置口径一致（不再截窗口，避免错位）
+            lo = max(0, i - 1023)
             lg = m(F[:, lo:i + 1], torch.full((1, i + 1 - lo), prev, dtype=torch.long))
             p = torch.softmax(lg[0, -1] / temp, -1).numpy()
             b = int(rng.choice(NB, p=p))
