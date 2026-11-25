@@ -36,13 +36,21 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
     ft = torch.from_numpy(F[None])
     out = {}
     prev = NB
+    j_in_beat = 0
     st = None
     with torch.no_grad():
         for i in range(len(ns)):
             lg, st = m(ft[:, i:i + 1], torch.tensor([[prev]]), st)
             p = torch.softmax(lg[0, 0] / temp, -1).numpy()
             b = int(rng.choice(NB, p=p))
-            prev = b
+            b_cur = round(ns[i]['b'], 3)
+            if i > 0 and b_cur == round(ns[i - 1]['b'], 3) and j_in_beat > 0:
+                # 同拍第二颗起：用刚才那颗的镜像位置喂给模型，逼它往对侧摆，
+                # 真谱双押跨度 437，顺着递推只会 270
+                prev = int(np.clip(NB - 1 - b, 0, NB))
+            else:
+                prev = b
+            j_in_beat = j_in_beat + 1 if (i > 0 and b_cur == round(ns[i - 1]['b'], 3)) else 0
             x = float(g2x(b) + rng.uniform(-20, 20))
-            out.setdefault(round(ns[i]['b'], 3), []).append(x)
+            out.setdefault(b_cur, []).append(x)
     return out
