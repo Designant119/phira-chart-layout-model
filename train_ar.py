@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""逐音自回归排键模型：学 placement3 的 GRU 结构（上一音位置作为输入），
+但换成 x_abs 绝对坐标 + 81 格分辨率重训。
+
+placement3 在真谱节奏上实测 |x|中位240/同列17.4%/单列127，手感被用户认可；
+本文件的差别只有数据口径（x_abs 全量）和分辨率（81 格 vs 27 桶）。
+"""
+import os
+import sys
+import json
+import glob
+import argparse
+import random
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+NB = 81
+HALF = 675.0
+DIM = 11          # 节奏/类型特征维
+PEB = 48          # prev 位置 embedding 维
+MAXLEN = 4096     # 单曲最长音数
+
+
+def x2g(x):
+    return int(np.clip(round((x + HALF) / (2 * HALF) * (NB - 1)), 0, NB - 1))
+
+
+def g2x(g):
+    return (g / (NB - 1)) * 2 * HALF - HALF
+
+
+def load_song(path):
+    d = json.load(open(path))
+    ns = [n for n in d['notes'] if n.get('x_abs') is not None]
+    ns.sort(key=lambda n: n['t'])
+    return ns
+
+
+def feats(ns):
+    """(n, 11) 节奏特征，照 placement3 的 feats 但用秒/类型"""
+    n = len(ns)
+    t = np.array([z['t'] for z in ns], np.float32)
+    ty = np.array([int(z.get('type', 1)) for z in ns], np.int64)
+    du = np.array([float(z.get('dur', 0) or 0) for z in ns], np.float32)
+    prev = np.diff(t, prepend=t[0] - 2.)
+    nxt = np.diff(t, append=t[-1] + 2.)
+    f = np.zeros((n, DIM), np.float32)
+    f[:, 0] = np.log(prev + .01)
+    f[:, 1] = np.log(nxt + .01)
+    f[np.arange(n), 2 + np.clip(ty - 1, 0, 3)] = 1
+    f[:, 6] = np.log(np.maximum(du, 0) + .01) * (ty == 2)
+    f[:, 7] = prev < .005
+    f[:, 8] = nxt < .005
+    ends = np.maximum.accumulate(t + du)
+    f[:, 9] = (np.r_[0, ends[:-1]] > t + .03)
+    lo = np.searchsorted(t, t - 1.)
+    hi = np.searchsorted(t, t + 1.)
+    f[:, 10] = np.log((hi - lo) / 2 + .5)
+    return f
+
+
+class ARNet(nn.Module):
+    def __init__(self, h=192):
+        super().__init__()
+        self.prev = nn.Embedding(NB + 1, PEB)
+        self.inp = nn.Linear(DIM + PEB, h)
+        self.g = nn.GRU(h, h, 2, batch_first=True, dropout=.2)
+        self.o = nn.Linear(h, NB)
+
+    def forward(self, f, pb, st=None):
+        o, st = self.g(torch.relu(self.inp(torch.cat([f, self.prev(pb)], -1))), st)
+        return self.o(o), st
+
+
+def build_batch(songs, idx, noise=0.15):
+    """songs: [(f, y, pb)]；返回 padding 后的张量与 mask"""
+    n = max(len(songs[i][0]) for i in idx)
+    B = len(idx)
+    F = np.zeros((B, n, DIM), np.float32)
+    PB = np.full((B, n), NB, np.int64)
+    Y = np.zeros((B, n), np.int64)
+    M = np.zeros((B, n), np.float32)
+    for j, i in enumerate(idx):
+        f, y, pb = songs[i]
+        t = len(f)
+        F[j, :t] = f
+        Y[j, :t] = y
+        M[j, :t] = 1.0
+        PB[j, :t] = pb
+        if noise > 0:
+            r = np.random.rand(t)
+            # 一部分音把上一位置替换成随机位置，模拟推理时的累积误差
+            repl = r < noise
+            if repl.any():
+                PB[j, :t][repl] = np.random.randint(0, NB, int(repl.sum()))
+            # 再叠一点抖动：把 bucket 左右随机偏一格
+            jitter = (np.random.rand(t) < noise * 2)
+            if jitter.any():
+                PB[j, :t][jitter] = np.clip(PB[j, :t][jitter] + np.random.randint(-1, 2, int(jitter.sum())), 0, NB)
+    return (torch.from_numpy(F), torch.from_numpy(PB), torch.from_numpy(Y), torch.from_numpy(M))
+
+
+def load_data(paths, limit=0):
+    songs = []
+    for p in paths:
+        try:
+            ns = load_song(p)
+        except Exception:
+            continue
+        if len(ns) < 8 or len(ns) > MAXLEN:
+            continue
+        f = feats(ns)
+        y = np.array([x2g(z['x_abs']) for z in ns], np.int64)
+        pb = np.full(len(ns), NB, np.int64)
+        pb[1:] = y[:-1]          # teacher forcing：上一音真实位置
+        songs.append((f, y, pb))
+    return songs
+
+
+def evaluate(model, songs, idx):
+    model.eval()
+    ce = nn.CrossEntropyLoss(reduction='none')
+    tot_x = []; ok = 0; n = 0; acc = 0
+    with torch.no_grad():
+        for it in range(0, len(idx), 64):
+            F, PB, Y, M = build_batch(songs, idx[it:it + 64], noise=0)
+            lg, _ = model(F, PB)
+            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
+            n += 1; acc += float(loss)
+            pred = lg.argmax(-1)
+            mask = M > 0
+            tot_x.append(g2x(pred[mask].numpy()))
+            ok += int((pred[mask] == Y[mask]).sum()); 
+            ncor = int(mask.sum())
+            if not hasattr(evaluate, '_n'):
+                evaluate._n = 0
+            evaluate._n += ncor
+    x = np.concatenate(tot_x)
+    evaluate._n = 0
+    return acc / max(1, n), x
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--pars', default='/home/user/Doubao/chats/38453392661469954/_run_real_traj/abs_full/parsed')
+    ap.add_argument('--limit', type=int, default=1500)
+    a = ap.parse_args()
+    files = sorted(glob.glob(a.pars + '/*.json'))
+    random.seed(0); random.shuffle(files)
+    files = files[:a.limit]
+    print('曲目', len(files), flush=True)
+    songs = load_data(files)
+    print('可用', len(songs), '总音', sum(len(s[0]) for s in songs), flush=True)
+    n = len(songs)
+    vidx = list(range(int(n * 0.95), n))
+    tridx = list(range(0, int(n * 0.95)))
+    model = ARNet()
+    if os.environ.get('RESUME') and os.path.exists(os.environ.get('CKPT_OUT', 'arnet.pt')):
+        model.load_state_dict(torch.load(os.environ.get('CKPT_OUT', 'arnet.pt'), map_location='cpu'))
+        print('热启动', flush=True)
+    opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
+    ce = nn.CrossEntropyLoss(reduction='none', label_smoothing=0.03)
+    BS = 16
+    EPOCH = int(os.environ.get('EPOCH', 4))
+    for ep in range(EPOCH):
+        model.train(); random.shuffle(tridx)
+        tot = 0.; nb = 0
+        for it in range(0, len(tridx), BS):
+            F, PB, Y, M = build_batch(songs, tridx[it:it + BS])
+            lg, _ = model(F, PB)
+            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
+            opt.zero_grad(); loss.backward(); opt.step()
+            tot += float(loss.detach()); nb += 1
+            if it % 200 == 0:
+                print('  ep%d %d/%d loss %.4f' % (ep, it, len(tridx), tot / max(1, nb)), flush=True)
+        print('ep%d 训练损失 %.4f' % (ep, tot / max(1, nb)), flush=True)
+        model.eval()
+        with torch.no_grad():
+            vl = 0.; vn = 0; xs = []
+            for it in range(0, len(vidx), 64):
+                F, PB, Y, M = build_batch(songs, vidx[it:it + 64], noise=0)
+                lg, _ = model(F, PB)
+                loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
+                vl += float(loss); vn += 1
+                pred = lg.argmax(-1); mask = M > 0
+                xs.append(g2x(pred[mask].numpy()))
+            x = np.concatenate(xs)
+            print('  验证 音 %d |x|中位%.0f(真%.0f) <135占%.1f%%(真%.1f%%) >400占%.1f%%(真%.1f%%) loss %.4f' % (
+                len(x), np.median(np.abs(x)), 253, np.mean(np.abs(x) < 135) * 100, 23.2,
+                np.mean(np.abs(x) > 400) * 100, 21.9, vl / max(1, vn)), flush=True)
+        torch.save(model.state_dict(), os.environ.get('CKPT_OUT', 'arnet.pt'))
+        print('  已存', os.environ.get('CKPT_OUT', 'arnet.pt'), flush=True)
+
+
+if __name__ == '__main__':
+    main()

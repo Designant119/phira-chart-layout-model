@@ -151,7 +151,7 @@ def main():
     _ck = os.environ.get('CKPT_OUT', 'segnet2.pt')
     if os.environ.get('RESUME') and os.path.exists(_ck):
         model.load_state_dict(torch.load(_ck, map_location='cpu'))
-        print('  从 segnet2.pt 热启动', flush=True)
+        print('  从 *_ck 热启动', flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
     ce = nn.CrossEntropyLoss(reduction='none', label_smoothing=0.05)
     BS = 128

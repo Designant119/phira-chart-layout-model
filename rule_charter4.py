@@ -39,6 +39,7 @@ def main():
     ap.add_argument('--seed', type=int, default=11)
     ap.add_argument('--use-model', action='store_true', help='单音位置改用段级模型')
     ap.add_argument('--use-model2', action='store_true', help='用 v2 段级模型，一拍多颗')
+    ap.add_argument('--use-ar', action='store_true', help='用逐音自回归模型（学 placement3）')
     a = ap.parse_args()
 
     rng = random.Random(a.seed)
@@ -76,6 +77,10 @@ def main():
                           'type': int(n.get('type', 1))})
     mpos = {}
     mpos2 = {}
+    if getattr(a, 'use_ar', False):
+        import model_pos_ar
+        mpos2 = model_pos_ar.build(notes, seed=a.seed, temp=float(os.environ.get('AR_TEMP', '1.0')))
+        print('# AR 模型给出 %d 拍' % len(mpos2), flush=True)
     if getattr(a, 'use_model2', False):
         import model_pos2
         mpos2 = model_pos2.build(notes, seed=a.seed, ckpt=os.environ.get('M2_CKPT', 'segnet2.pt'))
