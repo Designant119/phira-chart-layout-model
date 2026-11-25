@@ -17,19 +17,20 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-NB = 81
-HALF = 675.0
+NB = 21           # 屏幕内 21 个标准格位：-450..450，每格 45 坐标
+HALF = 450.0
+GRID = 45.0
 DIM = 11          # 节奏/类型特征维
 PEB = 48          # prev 位置 embedding 维
 MAXLEN = 4096     # 单曲最长音数
 
 
 def x2g(x):
-    return int(np.clip(round((x + HALF) / (2 * HALF) * (NB - 1)), 0, NB - 1))
+    return int(np.clip(round((x + HALF) / GRID), 0, NB - 1))
 
 
 def g2x(g):
-    return (g / (NB - 1)) * 2 * HALF - HALF
+    return g * GRID - HALF
 
 
 def load_song(path):
@@ -95,7 +96,7 @@ def build_batch(songs, idx, noise=0.15):
             # 随机替换会教模型“prev 不可信就回中间最稳”，推理时踩到 x=0 就有 39% 概率原地不动
             jitter = (np.random.rand(t) < noise)
             if jitter.any():
-                PB[j, :t][jitter] = np.clip(PB[j, :t][jitter] + np.random.randint(-6, 7, int(jitter.sum())), 0, NB)
+                PB[j, :t][jitter] = np.clip(PB[j, :t][jitter] + np.random.randint(-1, 2, int(jitter.sum())), 0, NB)
     return (torch.from_numpy(F), torch.from_numpy(PB), torch.from_numpy(Y), torch.from_numpy(M))
 
 

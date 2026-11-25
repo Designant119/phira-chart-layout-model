@@ -28,8 +28,8 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     # 屏幕边界：note 宽 10.5 格，摆到 ±675 就半边出框；真谱 99% 的音在 ±450 内
-    cap = float(os.environ.get('XCAP', '495'))
-    JIT = float(os.environ.get('XJIT', '20'))
+    cap = float(os.environ.get('XCAP', '450'))
+    JIT = float(os.environ.get('XJIT', '8'))
     GRID = float(os.environ.get('XGRID', '0'))
     lo_g = x2g(-cap) if cap < 675 else 0
     hi_g = x2g(cap) if cap < 675 else NB - 1
