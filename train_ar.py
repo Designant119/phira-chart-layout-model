@@ -26,7 +26,10 @@ GAPHI = 135.0
 SBAN = float(os.environ.get('SBAN', '180'))   # 同拍两音最小间距：note 宽 177，低于这个就叠死
 SBW = float(os.environ.get('SBW', '3.0'))
 DROPDX = float(os.environ.get('DROPDX', '0.3'))
-DIM = int(os.environ.get('DIMF', '12'))  # 12=带上一步方向，11=老版
+DIM = int(os.environ.get('DIMF', '16'))  # 16=带过去4拍走势(段记忆)，11=老版
+# 真谱 21 格占比（40 首统计）：中间格 15.7%，两端 4~6%，逗号格 1.7~2%
+PRIORC = np.array([4.4,6.2,4.7,1.9,5.1,4.1,4.3,5.5,3.7,1.7,15.7,1.7,3.6,5.4,4.4,4.3,5.2,1.9,4.9,6.4,4.6], np.float32)
+PRIORW = float(os.environ.get('PRIORW', '1.0'))
 PEB = 48          # prev 位置 embedding 维
 MAXLEN = 4096     # 单曲最长音数
 
@@ -66,10 +69,12 @@ def feats(ns):
     lo = np.searchsorted(t, t - 1.)
     hi = np.searchsorted(t, t + 1.)
     f[:, 10] = np.log((hi - lo) / 2 + .5)
-    # 上一步方向：人写谱有惯性，连续几拍会顺着一个方向走
+    # 段记忆：把过去 4 拍的走法（方向）当作输入，模型才能复用同一套手势
     if DIM > 11:
         x = np.array([float(z.get('x_abs', 0) or 0) for z in ns], np.float32)
-        f[:, 11] = np.r_[0., np.sign(np.diff(x))]
+        d = np.r_[0., np.sign(np.diff(x))]
+        for j in range(4):
+            f[:, 11 + j] = np.r_[np.zeros(j, np.float32), d[:len(d) - j]] if j else d
     return f
 
 
@@ -181,9 +186,9 @@ def main():
         for it in range(0, len(tridx), BS):
             F, PB, Y, M = build_batch(songs, tridx[it:it + BS])
             if DROPDX > 0:
-                # 随机抹掉位移维：逼模型两种模式都会走，不能只靠“一直往前”
+                # 随机抹掉段记忆维：逼它有时也能不看历史、自己起新走法
                 keep = (torch.rand(F.shape[0], F.shape[1], 1) > DROPDX).float()
-                F[:, :, 11:12] = F[:, :, 11:12] * keep
+                F[:, :, 11:] = F[:, :, 11:] * keep
             rate = 0.0 if ep < SS_EP else min(SS_MAX, (ep - SS_EP + 1) / 3.0)
             if rate > 0:
                 # 自采样：拿模型自己的采样结果当上一音，治 teacher forcing 后遗症
@@ -194,7 +199,20 @@ def main():
                     mix = torch.rand(PB.shape) < rate
                     PB = PB.clone()
                     PB[:, 1:] = torch.where(mix[:, 1:], pred[:, :-1], PB[:, 1:])
+                    if DIM > 11:
+                        # motif 维也换成自己生成的走势，否则训练看到真历史、推理自己乱走
+                        for j in range(min(4, DIM - 11)):
+                            if j == 0:
+                                src = pred - torch.roll(pred, 1, 1)
+                            else:
+                                src = torch.roll(pred, j, 1) - torch.roll(pred, j + 1, 1)
+                            src = src.sign().float()
+                            F[:, :, 11 + j] = torch.where(mix, src, F[:, :, 11 + j])
             lg, _ = model(F, PB)
+            if PRIORW > 0:
+                # 位置先验：真谱每格的占比当 logit 偏置，模型不至于一路推到边上
+                lp = torch.from_numpy(np.log(PRIORC / PRIORC.sum() + 1e-8)).float()
+                lg = lg + PRIORW * lp[None, None, :]
             banpen = 0.; sbpen = 0.
             if GAPHI > 0:
                 # 半叠禁带：跨拍不许落在距上一音 20..135 的区间（真谱这段只占 4%）
