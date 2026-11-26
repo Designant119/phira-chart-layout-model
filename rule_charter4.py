@@ -477,7 +477,7 @@ def main():
             "skewControl": [{"easing": 1, "skew": 0.0, "x": 0.0}, {"easing": 1, "skew": 0.0, "x": 9999999.0}],
             "yControl": [{"easing": 1, "x": 0.0, "y": 1.0}, {"easing": 1, "x": 9999999.0, "y": 1.0}],
         }
-    _LNS = [_mkline(_jl, 0.0, 0.0)]
+    _LNS = [_mkline(_jl, float(os.environ.get('LINE_Y', '0.0')), float(os.environ.get('LINE_ROT', '0.0')))]
     # 按"连续 10 拍"切小段轮流换线：同屏大约两条线都在，但每条各承担一半音，密度降一半
     _grp = 10
     for _i, _n in enumerate(_all):
