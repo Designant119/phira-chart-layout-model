@@ -277,8 +277,18 @@ def main():
                 types2 = [x['type'] for x in items]
                 if sweep_col is not None:
                     # 扫线段内的双 drag：围绕扫线列做窄对称，保持扫线连续性
-                    pos = [int(np.clip(sweep_col - 5, 0, ncol - 1)),
-                           int(np.clip(sweep_col + 5, 0, ncol - 1))]
+                    # 双 drag 中心距必须大于 note 宽（177 坐标 = 10.5 格），否则画面上直接叠死
+                    dw = int(np.ceil(177.0 / colw)) + 1
+                    a = int(np.clip(sweep_col - dw // 2, 0, ncol - 1))
+                    b = int(np.clip(sweep_col + dw // 2, 0, ncol - 1))
+                    if b - a < dw:
+                        if sweep_col * 2 <= ncol - 1:
+                            b = min(ncol - 1, a + dw)
+                        else:
+                            a = max(0, b - dw)
+                        if b - a < dw:
+                            b = min(ncol - 1, a + dw)
+                    pos = [a, b]
                     i = sweep_col
                 elif 3 in types2 and types2 != [3, 3]:
                     # drag 与 tap 同拍：位置贴着 tap（真谱 15831 里 drag 与 tap 的 |x| 中位完全相同）
