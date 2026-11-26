@@ -23,6 +23,8 @@ GRID = 45
 BANW = float(os.environ.get('BANW', '2.0'))
 GAPLO = 20.0      # 半叠禁带下界：note 宽约 177 坐标，20-135 的间距会半叠
 GAPHI = 135.0
+SBAN = float(os.environ.get('SBAN', '180'))   # 同拍两音最小间距：note 宽 177，低于这个就叠死
+SBW = float(os.environ.get('SBW', '3.0'))
 DIM = 11          # 节奏/类型特征维
 PEB = 48          # prev 位置 embedding 维
 MAXLEN = 4096     # 单曲最长音数
@@ -184,7 +186,7 @@ def main():
                     PB = PB.clone()
                     PB[:, 1:] = torch.where(mix[:, 1:], pred[:, :-1], PB[:, 1:])
             lg, _ = model(F, PB)
-            banpen = 0.
+            banpen = 0.; sbpen = 0.
             if GAPHI > 0:
                 # 半叠禁带：跨拍不许落在距上一音 20..135 的区间（真谱这段只占 4%）
                 # 不遮 logits，直接把禁带类上的概率压到 0，权重才会真的记住这条约束
@@ -199,8 +201,13 @@ def main():
                 prob = torch.softmax(lg, -1)
                 banpen = (prob * ban.float()).sum(-1)
                 banpen = (banpen * M).sum() / M.sum()
+                # 同拍多押最小间距：同一拍的第二个音起，不许落在前一颗 180 以内
+                sb = (dprev < SBAN) & samebeat.unsqueeze(-1)
+                sb[:, 0, :] = False
+                sbpen = (prob * sb.float()).sum(-1)
+                sbpen = (sbpen * M).sum() / M.sum()
             M2 = M
-            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum() + BANW * banpen
+            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum() + BANW * banpen + SBW * sbpen
             opt.zero_grad(); loss.backward(); opt.step()
             tot += float(loss.detach()); nb += 1
             if it % 200 == 0:
