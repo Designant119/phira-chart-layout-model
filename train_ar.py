@@ -190,7 +190,11 @@ def main():
                 # 不遮 logits，直接把禁带类上的概率压到 0，权重才会真的记住这条约束
                 dprev = (GXT[None, None, :] - GXT[PB.clamp(max=NB - 1)].unsqueeze(-1)).abs()
                 samebeat = (F[:, :, 7] > 0)
-                ban = (dprev > GAPLO) & (dprev < GAPHI) & (~samebeat.unsqueeze(-1))
+                ban = (dprev > GAPLO) & (dprev < GAPHI)
+                # 密集连打段（拍间隔 < 0.4）也不许原地：真谱这段原地率只有 2~4%
+                gapb = torch.exp(F[:, :, 0]) - 0.01
+                ban = ban | ((dprev < 0.5) & (gapb < 0.4).unsqueeze(-1))
+                ban = ban & (~samebeat.unsqueeze(-1))
                 ban[:, 0, :] = False
                 prob = torch.softmax(lg, -1)
                 banpen = (prob * ban.float()).sum(-1)
