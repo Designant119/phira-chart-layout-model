@@ -19,7 +19,8 @@ import torch.nn as nn
 
 NB = 21           # 屏幕内 21 个标准格位：-450..450，每格 45 坐标
 HALF = 450.0
-GRID = 45.0
+GRID = 45
+BANW = float(os.environ.get('BANW', '2.0'))
 GAPLO = 20.0      # 半叠禁带下界：note 宽约 177 坐标，20-135 的间距会半叠
 GAPHI = 135.0
 DIM = 11          # 节奏/类型特征维
@@ -78,7 +79,7 @@ class ARNet(nn.Module):
         return self.o(o), st
 
 
-def build_batch(songs, idx, noise=0.15):
+def build_batch(songs, idx, noise=0.0):
     """songs: [(f, y, pb)]；返回 padding 后的张量与 mask"""
     n = max(len(songs[i][0]) for i in idx)
     B = len(idx)
@@ -183,18 +184,19 @@ def main():
                     PB = PB.clone()
                     PB[:, 1:] = torch.where(mix[:, 1:], pred[:, :-1], PB[:, 1:])
             lg, _ = model(F, PB)
+            banpen = 0.
             if GAPHI > 0:
-                # 禁带 mask：跨拍不许落在距上一音 20..135 的半叠区，真谱这段只占 4.1%
+                # 半叠禁带：跨拍不许落在距上一音 20..135 的区间（真谱这段只占 4%）
+                # 不遮 logits，直接把禁带类上的概率压到 0，权重才会真的记住这条约束
                 dprev = (GXT[None, None, :] - GXT[PB.clamp(max=NB - 1)].unsqueeze(-1)).abs()
                 samebeat = (F[:, :, 7] > 0)
                 ban = (dprev > GAPLO) & (dprev < GAPHI) & (~samebeat.unsqueeze(-1))
                 ban[:, 0, :] = False
-                lg = lg.masked_fill(ban, -30.0)
-                banT = ban.gather(2, Y.unsqueeze(-1)).squeeze(-1)
-                M2 = M * (~banT).float()
-            else:
-                M2 = M
-            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum()
+                prob = torch.softmax(lg, -1)
+                banpen = (prob * ban.float()).sum(-1)
+                banpen = (banpen * M).sum() / M.sum()
+            M2 = M
+            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum() + BANW * banpen
             opt.zero_grad(); loss.backward(); opt.step()
             tot += float(loss.detach()); nb += 1
             if it % 200 == 0:
