@@ -31,6 +31,9 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
     cap = float(os.environ.get('XCAP', '450'))
     JIT = float(os.environ.get('XJIT', '8'))
     GRID = float(os.environ.get('XGRID', '0'))
+    GAPMIN = float(os.environ.get('XGAP', '0'))  # 跨拍禁用 20..GAPMIN 的半叠距离
+    GX = np.array([g2x(j) for j in range(NB)])
+    last_x = None
     lo_g = x2g(-cap) if cap < 675 else 0
     hi_g = x2g(cap) if cap < 675 else NB - 1
     HF = float(os.environ.get('XHF', '0'))
@@ -52,6 +55,8 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
     st = None
     with torch.no_grad():
         for i in range(len(ns)):
+            b_cur = round(ns[i]['b'], 3)
+            b_cur_prev = round(ns[i - 1]['b'], 3) if i > 0 else None
             lg, st = m(ft[:, i:i + 1], torch.tensor([[prev]]), st)
             p = torch.softmax(lg[0, 0] / temp, -1).numpy()
             if cap < 675:
@@ -59,6 +64,11 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
                 p[hi_g + 1:] = 0.0
                 s = p.sum()
                 p /= s if s > 0 else 1.0
+            if GAPMIN > 0 and last_x is not None and b_cur_prev is not None and b_cur != b_cur_prev:
+                d = np.abs(GX - last_x)
+                p[(d > 20) & (d < GAPMIN)] = 0.0
+                s2 = p.sum()
+                p /= s2 if s2 > 0 else 1.0
             if HF > 0 and i > 0:
                 # 配额校正：已超配的桶压低，欠配的桶抬高，把整曲分布拉回真谱钟形
                 used = cnt / max(cnt.sum(), 1.0)
@@ -69,7 +79,6 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
                 p /= s if s > 0 else 1.0
             b = int(rng.choice(NB, p=p))
             cnt[bq[b]] += 1
-            b_cur = round(ns[i]['b'], 3)
             if i > 0 and b_cur == round(ns[i - 1]['b'], 3) and j_in_beat > 0:
                 # 同拍第二颗起：用刚才那颗的镜像位置喂给模型，逼它往对侧摆，
                 # 真谱双押跨度 437，顺着递推只会 270
@@ -78,6 +87,7 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
                 prev = b
             j_in_beat = j_in_beat + 1 if (i > 0 and b_cur == round(ns[i - 1]['b'], 3)) else 0
             x = float(g2x(b) + rng.uniform(-JIT, JIT))
+            last_x = x
             if GRID > 0:
                 x = float(np.clip(np.round(x / GRID) * GRID, -cap, cap))
             out.setdefault(b_cur, []).append(x)
