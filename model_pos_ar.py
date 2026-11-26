@@ -34,6 +34,7 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
     GAPMIN = float(os.environ.get('XGAP', '0'))  # 跨拍禁用 20..GAPMIN 的半叠距离
     GX = np.array([g2x(j) for j in range(NB)])
     last_x = None
+    last_dx = 0.0
     lo_g = x2g(-cap) if cap < 675 else 0
     hi_g = x2g(cap) if cap < 675 else NB - 1
     HF = float(os.environ.get('XHF', '0'))
@@ -57,6 +58,7 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
         for i in range(len(ns)):
             b_cur = round(ns[i]['b'], 3)
             b_cur_prev = round(ns[i - 1]['b'], 3) if i > 0 else None
+            ft[:, i, 11] = last_dx / HALF  # 用自己刚走过的位移，不泄漏原谱
             lg, st = m(ft[:, i:i + 1], torch.tensor([[prev]]), st)
             p = torch.softmax(lg[0, 0] / temp, -1).numpy()
             if cap < 675:
@@ -87,6 +89,8 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
                 prev = b
             j_in_beat = j_in_beat + 1 if (i > 0 and b_cur == round(ns[i - 1]['b'], 3)) else 0
             x = float(g2x(b) + rng.uniform(-JIT, JIT))
+            if i > 0 and b_cur != b_cur_prev:
+                last_dx = x - last_x
             last_x = x
             if GRID > 0:
                 x = float(np.clip(np.round(x / GRID) * GRID, -cap, cap))

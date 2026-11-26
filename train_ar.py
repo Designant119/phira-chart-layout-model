@@ -25,7 +25,7 @@ GAPLO = 20.0      # 半叠禁带下界：note 宽约 177 坐标，20-135 的间�
 GAPHI = 135.0
 SBAN = float(os.environ.get('SBAN', '180'))   # 同拍两音最小间距：note 宽 177，低于这个就叠死
 SBW = float(os.environ.get('SBW', '3.0'))
-DIM = 11          # 节奏/类型特征维
+DIM = 12          # 节奏/类型/上一步位移
 PEB = 48          # prev 位置 embedding 维
 MAXLEN = 4096     # 单曲最长音数
 
@@ -65,6 +65,9 @@ def feats(ns):
     lo = np.searchsorted(t, t - 1.)
     hi = np.searchsorted(t, t + 1.)
     f[:, 10] = np.log((hi - lo) / 2 + .5)
+    # 上一步位移：人写谱有惯性，连续几拍会顺着一个方向走同样的步长
+    x = np.array([float(z.get('x_abs', 0) or 0) for z in ns], np.float32)
+    f[:, 11] = np.r_[0., np.diff(x)] / HALF
     return f
 
 
@@ -192,11 +195,7 @@ def main():
                 # 不遮 logits，直接把禁带类上的概率压到 0，权重才会真的记住这条约束
                 dprev = (GXT[None, None, :] - GXT[PB.clamp(max=NB - 1)].unsqueeze(-1)).abs()
                 samebeat = (F[:, :, 7] > 0)
-                ban = (dprev > GAPLO) & (dprev < GAPHI)
-                # 密集连打段（拍间隔 < 0.4）也不许原地：真谱这段原地率只有 2~4%
-                gapb = torch.exp(F[:, :, 0]) - 0.01
-                ban = ban | ((dprev < 0.5) & (gapb < 0.4).unsqueeze(-1))
-                ban = ban & (~samebeat.unsqueeze(-1))
+                ban = (dprev > GAPLO) & (dprev < GAPHI) & (~samebeat.unsqueeze(-1))
                 ban[:, 0, :] = False
                 prob = torch.softmax(lg, -1)
                 banpen = (prob * ban.float()).sum(-1)
