@@ -26,7 +26,7 @@ GAPHI = 135.0
 SBAN = float(os.environ.get('SBAN', '180'))   # 同拍两音最小间距：note 宽 177，低于这个就叠死
 SBW = float(os.environ.get('SBW', '3.0'))
 DROPDX = float(os.environ.get('DROPDX', '0.3'))
-DIM = 12          # 节奏/类型/上一步位移
+DIM = int(os.environ.get('DIMF', '12'))  # 12=带上一步方向，11=老版
 PEB = 48          # prev 位置 embedding 维
 MAXLEN = 4096     # 单曲最长音数
 
@@ -66,10 +66,10 @@ def feats(ns):
     lo = np.searchsorted(t, t - 1.)
     hi = np.searchsorted(t, t + 1.)
     f[:, 10] = np.log((hi - lo) / 2 + .5)
-    # 上一步位移：人写谱有惯性，连续几拍会顺着一个方向走同样的步长
-    x = np.array([float(z.get('x_abs', 0) or 0) for z in ns], np.float32)
-    # 只给方向不给幅度：给幅度模型会直接复制步长，一路推到边上停住
-    f[:, 11] = np.r_[0., np.sign(np.diff(x))]
+    # 上一步方向：人写谱有惯性，连续几拍会顺着一个方向走
+    if DIM > 11:
+        x = np.array([float(z.get('x_abs', 0) or 0) for z in ns], np.float32)
+        f[:, 11] = np.r_[0., np.sign(np.diff(x))]
     return f
 
 
