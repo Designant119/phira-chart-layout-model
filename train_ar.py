@@ -20,6 +20,8 @@ import torch.nn as nn
 NB = 21           # 屏幕内 21 个标准格位：-450..450，每格 45 坐标
 HALF = 450.0
 GRID = 45.0
+GAPLO = 20.0      # 半叠禁带下界：note 宽约 177 坐标，20-135 的间距会半叠
+GAPHI = 135.0
 DIM = 11          # 节奏/类型特征维
 PEB = 48          # prev 位置 embedding 维
 MAXLEN = 4096     # 单曲最长音数
@@ -160,6 +162,7 @@ def main():
         print('热启动', flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
     ce = nn.CrossEntropyLoss(reduction='none', label_smoothing=0.03)
+    GXT = torch.tensor([g2x(i) for i in range(NB)], dtype=torch.float32)
     BS = 16
     EPOCH = int(os.environ.get('EPOCH', 4))
     for ep in range(EPOCH):
@@ -180,7 +183,18 @@ def main():
                     PB = PB.clone()
                     PB[:, 1:] = torch.where(mix[:, 1:], pred[:, :-1], PB[:, 1:])
             lg, _ = model(F, PB)
-            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
+            if GAPHI > 0:
+                # 禁带 mask：跨拍不许落在距上一音 20..135 的半叠区，真谱这段只占 4.1%
+                dprev = (GXT[None, None, :] - GXT[PB.clamp(max=NB - 1)].unsqueeze(-1)).abs()
+                samebeat = (F[:, :, 7] > 0)
+                ban = (dprev > GAPLO) & (dprev < GAPHI) & (~samebeat.unsqueeze(-1))
+                ban[:, 0, :] = False
+                lg = lg.masked_fill(ban, -30.0)
+                banT = ban.gather(2, Y.unsqueeze(-1)).squeeze(-1)
+                M2 = M * (~banT).float()
+            else:
+                M2 = M
+            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum()
             opt.zero_grad(); loss.backward(); opt.step()
             tot += float(loss.detach()); nb += 1
             if it % 200 == 0:
