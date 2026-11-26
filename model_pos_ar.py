@@ -58,7 +58,7 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
         for i in range(len(ns)):
             b_cur = round(ns[i]['b'], 3)
             b_cur_prev = round(ns[i - 1]['b'], 3) if i > 0 else None
-            ft[:, i, 11] = last_dx / HALF  # 用自己刚走过的位移，不泄漏原谱
+            ft[:, i, 11] = np.sign(last_dx)  # 只用方向，幅度自己决定
             lg, st = m(ft[:, i:i + 1], torch.tensor([[prev]]), st)
             p = torch.softmax(lg[0, 0] / temp, -1).numpy()
             if cap < 675:

@@ -25,6 +25,7 @@ GAPLO = 20.0      # 半叠禁带下界：note 宽约 177 坐标，20-135 的间�
 GAPHI = 135.0
 SBAN = float(os.environ.get('SBAN', '180'))   # 同拍两音最小间距：note 宽 177，低于这个就叠死
 SBW = float(os.environ.get('SBW', '3.0'))
+DROPDX = float(os.environ.get('DROPDX', '0.3'))
 DIM = 12          # 节奏/类型/上一步位移
 PEB = 48          # prev 位置 embedding 维
 MAXLEN = 4096     # 单曲最长音数
@@ -67,7 +68,8 @@ def feats(ns):
     f[:, 10] = np.log((hi - lo) / 2 + .5)
     # 上一步位移：人写谱有惯性，连续几拍会顺着一个方向走同样的步长
     x = np.array([float(z.get('x_abs', 0) or 0) for z in ns], np.float32)
-    f[:, 11] = np.r_[0., np.diff(x)] / HALF
+    # 只给方向不给幅度：给幅度模型会直接复制步长，一路推到边上停住
+    f[:, 11] = np.r_[0., np.sign(np.diff(x))]
     return f
 
 
@@ -178,6 +180,10 @@ def main():
         SS_MAX = float(os.environ.get('SS_MAX', '1.0'))
         for it in range(0, len(tridx), BS):
             F, PB, Y, M = build_batch(songs, tridx[it:it + BS])
+            if DROPDX > 0:
+                # 随机抹掉位移维：逼模型两种模式都会走，不能只靠“一直往前”
+                keep = (torch.rand(F.shape[0], F.shape[1], 1) > DROPDX).float()
+                F[:, :, 11:12] = F[:, :, 11:12] * keep
             rate = 0.0 if ep < SS_EP else min(SS_MAX, (ep - SS_EP + 1) / 3.0)
             if rate > 0:
                 # 自采样：拿模型自己的采样结果当上一音，治 teacher forcing 后遗症
