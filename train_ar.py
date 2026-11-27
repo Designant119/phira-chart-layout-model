@@ -30,6 +30,7 @@ DIM = int(os.environ.get('DIMF', '16'))  # 16=带过去4拍走势(段记忆)，1
 # 真谱 21 格占比（40 首统计）：中间格 15.7%，两端 4~6%，逗号格 1.7~2%
 PRIORC = np.array([4.4,6.2,4.7,1.9,5.1,4.1,4.3,5.5,3.7,1.7,15.7,1.7,3.6,5.4,4.4,4.3,5.2,1.9,4.9,6.4,4.6], np.float32)
 PRIORW = float(os.environ.get('PRIORW', '1.0'))
+HOLDW = float(os.environ.get('HOLDW', '0.0'))  # 长押占线惩罚
 STANDW = float(os.environ.get('STANDW', '0.0'))  # 原地档惩罚：纵连一张一串，数量翻倍就满屏竖线
 PEB = 48          # prev 位置 embedding 维
 MAXLEN = 4096     # 单曲最长音数
@@ -48,6 +49,10 @@ def load_song(path):
     ns = [n for n in d['notes'] if n.get('x_abs') is not None]
     ns.sort(key=lambda n: n['t'])
     return ns
+
+
+global songs_ns
+songs_ns = {}
 
 
 def feats(ns):
@@ -84,6 +89,9 @@ def feats(ns):
         act = []  # [(end_t, x, size)]
         for i in range(n):
             act = [a for a in act if a[0] > t[i]]
+            # 没有活 hold 时填“上一音自己的位置”，不填 0：
+            # 0 会同时表示“无 hold”和“hold 就在正中”，模型读成“中间被占”就一路挤死了（ar62 卡 456 音）
+            live_x[i] = (x[i - 1] if i > 0 else 0.0) / HALF
             if act:
                 live_x[i] = act[-1][1] / HALF
                 live_on[i] = 1.0
@@ -111,6 +119,23 @@ class ARNet(nn.Module):
         return self.o(o), st
 
 
+def live_hold_x(ns):
+    """每个音此刻活着的最长一条 hold 的 x；没有就 NaN"""
+    t = np.array([z['t'] for z in ns], np.float32)
+    x = np.array([float(z.get('x_abs', z.get('x', 0)) or 0) for z in ns], np.float32)
+    ty = np.array([int(z.get('type', 1)) for z in ns], np.int64)
+    du = np.array([float(z.get('dur', 0) or 0) for z in ns], np.float32)
+    out = np.full(len(ns), np.nan, np.float32)
+    act = []
+    for i in range(len(ns)):
+        act = [a for a in act if a[0] > t[i]]
+        if act:
+            out[i] = act[-1][1]
+        if ty[i] == 2 and du[i] > 0.5:
+            act.append((t[i] + du[i], x[i]))
+    return out
+
+
 def build_batch(songs, idx, noise=0.0):
     """songs: [(f, y, pb)]；返回 padding 后的张量与 mask"""
     n = max(len(songs[i][0]) for i in idx)
@@ -119,12 +144,14 @@ def build_batch(songs, idx, noise=0.0):
     PB = np.full((B, n), NB, np.int64)
     Y = np.zeros((B, n), np.int64)
     M = np.zeros((B, n), np.float32)
+    HX = np.full((B, n), np.nan, np.float32)
     for j, i in enumerate(idx):
         f, y, pb = songs[i]
         t = len(f)
         F[j, :t] = f
         Y[j, :t] = y
         M[j, :t] = 1.0
+        HX[j, :t] = live_hold_x(songs_ns[i])
         PB[j, :t] = pb
         if noise > 0:
             # 只做小幅抖动，不再把 prev 随机替换成任意格：
@@ -132,7 +159,7 @@ def build_batch(songs, idx, noise=0.0):
             jitter = (np.random.rand(t) < noise)
             if jitter.any():
                 PB[j, :t][jitter] = np.clip(PB[j, :t][jitter] + np.random.randint(-1, 2, int(jitter.sum())), 0, NB)
-    return (torch.from_numpy(F), torch.from_numpy(PB), torch.from_numpy(Y), torch.from_numpy(M))
+    return (torch.from_numpy(F), torch.from_numpy(PB), torch.from_numpy(Y), torch.from_numpy(M), torch.from_numpy(HX))
 
 
 def load_data(paths, limit=0):
@@ -149,6 +176,7 @@ def load_data(paths, limit=0):
         pb = np.full(len(ns), NB, np.int64)
         pb[1:] = y[:-1]          # teacher forcing：上一音真实位置
         songs.append((f, y, pb))
+        songs_ns[len(songs) - 1] = ns
     return songs
 
 
@@ -158,7 +186,7 @@ def evaluate(model, songs, idx):
     tot_x = []; ok = 0; n = 0; acc = 0
     with torch.no_grad():
         for it in range(0, len(idx), 64):
-            F, PB, Y, M = build_batch(songs, idx[it:it + 64], noise=0)
+            F, PB, Y, M, _ = build_batch(songs, idx[it:it + 64], noise=0)
             lg, _ = model(F, PB)
             loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
             n += 1; acc += float(loss)
@@ -204,7 +232,7 @@ def main():
         SS_EP = int(os.environ.get('SS_EP', '3'))
         SS_MAX = float(os.environ.get('SS_MAX', '1.0'))
         for it in range(0, len(tridx), BS):
-            F, PB, Y, M = build_batch(songs, tridx[it:it + BS])
+            F, PB, Y, M, HXT = build_batch(songs, tridx[it:it + BS])
             if DROPDX > 0:
                 # 随机抹掉段记忆维：逼它有时也能不看历史、自己起新走法
                 keep = (torch.rand(F.shape[0], F.shape[1], 1) > DROPDX).float()
@@ -261,7 +289,15 @@ def main():
                 deep = y0 & y1 & y2
                 w = torch.where(deep, torch.full_like(M, 1.0 - STANDW), torch.ones_like(M))
                 M2 = M * w
-            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum() + BANW * banpen + SBW * sbpen
+            holdpen = 0.
+            if HOLDW > 0:
+                hxl = HXT[:, :, None]
+                hd = (GXT[None, None, :] - hxl).abs()
+                hb = (hd < 177.0) & (~samebeat.unsqueeze(-1)) & torch.isfinite(hxl).expand_as(hd)
+                hb[:, 0, :] = False
+                holdpen = (prob * hb.float()).sum(-1)
+                holdpen = (holdpen * M).sum() / M.sum()
+            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum() + BANW * banpen + SBW * sbpen + HOLDW * holdpen
             opt.zero_grad(); loss.backward(); opt.step()
             tot += float(loss.detach()); nb += 1
             if it % 200 == 0:
@@ -271,7 +307,7 @@ def main():
         with torch.no_grad():
             vl = 0.; vn = 0; xs = []
             for it in range(0, len(vidx), 64):
-                F, PB, Y, M = build_batch(songs, vidx[it:it + 64], noise=0)
+                F, PB, Y, M, _ = build_batch(songs, vidx[it:it + 64], noise=0)
                 lg, _ = model(F, PB)
                 loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
                 vl += float(loss); vn += 1
