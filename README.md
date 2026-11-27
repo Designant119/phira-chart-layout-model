@@ -34,6 +34,22 @@
 | 可视化 | `viz_plain.py` `viz_editor.py` `viz_real_speed.py` | 排键布局图渲染 |
 | 工具 | `easing_lib.py` `finalize.py` `density_gap_corr.py` | 曲线插值、收尾处理、相关性统计 |
 
+## 本地 HTTP 服务（给编辑器用）
+
+`serve_layout.py` 把推理包成 HTTP，rpe-next 的采音面板可以直接调它给音符分配 x。
+
+```bash
+LAYOUT_CKPT=/path/to/ckpt_traj_full \
+LAYOUT_PORT=8819 \
+LAYOUT_CORS_ORIGINS=http://127.0.0.1:4173 \
+python3 serve_layout.py
+```
+
+- `LAYOUT_CKPT` 指向 ckpt 目录（里面有 `model.pth`，可选 `ckpt_state.json`）
+- `GET /v1/health` 返回 `{ready, feat, feature_set}`
+- `POST /v1/layout` 收 `{"notes":[{t,type,dur,line_id}], "bpm":[{t,bpm}], "level":0}`，回 `{"x":[...],...}`，x 是像素坐标（中心 0，±675）
+- 设置 `LAYOUT_TOKEN` 时要求 `Authorization: Bearer <token>`
+
 ## 环境依赖
 
 - Python 3.10+
