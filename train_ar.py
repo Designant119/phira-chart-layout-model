@@ -70,12 +70,31 @@ def feats(ns):
     lo = np.searchsorted(t, t - 1.)
     hi = np.searchsorted(t, t + 1.)
     f[:, 10] = np.log((hi - lo) / 2 + .5)
-    # 段记忆：把过去 4 拍的走法（方向）当作输入，模型才能复用同一套手势
+    # 长押占位：真谱 hold 占 11.6%，p95 1.2s、最长 42s；模型看不到“这条线被占着”，
+    # 就会把后续音继续往那条线上排，视觉上塌成一根长条
     if DIM > 11:
-        x = np.array([float(z.get('x_abs', 0) or 0) for z in ns], np.float32)
-        d = np.r_[0., np.sign(np.diff(x))]
-        for j in range(4):
-            f[:, 11 + j] = np.r_[np.zeros(j, np.float32), d[:len(d) - j]] if j else d
+        x = np.array([float(z.get('x_abs', z.get('x', 0)) or 0) for z in ns], np.float32)
+        dtype = np.array([int(z.get('type', 1)) for z in ns], np.int64)
+        duro = np.array([float(z.get('dur', 0) or 0) for z in ns], np.float32)
+        live_x = np.zeros(n, np.float32)
+        live_on = np.zeros(n, np.float32)
+        live_rem = np.zeros(n, np.float32)
+        live_sz = np.zeros(n, np.float32)
+        # 用最短存活链：按时间顺序维护还活着的 hold，取最近一条
+        act = []  # [(end_t, x, size)]
+        for i in range(n):
+            act = [a for a in act if a[0] > t[i]]
+            if act:
+                live_x[i] = act[-1][1] / HALF
+                live_on[i] = 1.0
+                live_rem[i] = np.log1p(max(0.0, act[-1][0] - t[i]))
+                live_sz[i] = act[-1][2]
+            if dtype[i] == 2 and duro[i] > 0.5:
+                act.append((t[i] + duro[i], x[i], float(ns[i].get('size', 1.0) or 1.0)))
+        f[:, 11] = live_x
+        f[:, 12] = live_on
+        f[:, 13] = live_rem
+        f[:, 14] = live_sz
     return f
 
 
