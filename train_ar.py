@@ -30,6 +30,7 @@ DIM = int(os.environ.get('DIMF', '16'))  # 16=带过去4拍走势(段记忆)，1
 # 真谱 21 格占比（40 首统计）：中间格 15.7%，两端 4~6%，逗号格 1.7~2%
 PRIORC = np.array([4.4,6.2,4.7,1.9,5.1,4.1,4.3,5.5,3.7,1.7,15.7,1.7,3.6,5.4,4.4,4.3,5.2,1.9,4.9,6.4,4.6], np.float32)
 PRIORW = float(os.environ.get('PRIORW', '1.0'))
+STANDW = float(os.environ.get('STANDW', '0.0'))  # 原地档惩罚：纵连一张一串，数量翻倍就满屏竖线
 PEB = 48          # prev 位置 embedding 维
 MAXLEN = 4096     # 单曲最长音数
 
@@ -229,7 +230,18 @@ def main():
                 sb[:, 0, :] = False
                 sbpen = (prob * sb.float()).sum(-1)
                 sbpen = (sbpen * M).sum() / M.sum()
+
             M2 = M
+            if STANDW > 0:
+                # 真谱原地串 1638 个、平均 1.94 拍；模型学到“一直原地”就成了满屏纵连
+                # 只降权“连续第 3 拍起仍原地”的真值样本，不碰 softmax，避免三项惩罚打架
+                zg = int(round(HALF / GRID))
+                y0 = (Y == zg)
+                y1 = torch.zeros_like(y0); y1[:, 1:] = y0[:, :-1]
+                y2 = torch.zeros_like(y0); y2[:, 2:] = y0[:, :-2]
+                deep = y0 & y1 & y2
+                w = torch.where(deep, torch.full_like(M, 1.0 - STANDW), torch.ones_like(M))
+                M2 = M * w
             loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum() + BANW * banpen + SBW * sbpen
             opt.zero_grad(); loss.backward(); opt.step()
             tot += float(loss.detach()); nb += 1
