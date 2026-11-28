@@ -30,6 +30,12 @@ DIM = int(os.environ.get('DIMF', '16'))  # 16=带过去4拍走势(段记忆)，1
 # 真谱 21 格占比（40 首统计）：中间格 15.7%，两端 4~6%，逗号格 1.7~2%
 PRIORC = np.array([4.4,6.2,4.7,1.9,5.1,4.1,4.3,5.5,3.7,1.7,15.7,1.7,3.6,5.4,4.4,4.3,5.2,1.9,4.9,6.4,4.6], np.float32)
 PRIORW = float(os.environ.get('PRIORW', '1.0'))
+# 真谱跨拍单音的 |dx| 直方图（每档 45 坐标，40 首 19498 对）：
+# 0~45 有 19.9%、90~135 有 5.9%、135~180 有 8.3%…… 这是唯一一条“奖励分布”的项
+# 去掉 0~45 那档：它是本轮崩掉的元凶（模型把所有音塞进最大桶就能骗低 loss）
+REALDIST = np.array([3.72,5.91,8.26,7.81,9.20,8.02,2.52,5.70,4.72,6.13,2.44,5.53,1.65,1.54,3.04,1.05,0.75,0.0,0.0,1.07], np.float32)
+REALDIST = REALDIST / REALDIST.sum()
+DISTW = float(os.environ.get('DISTW', '0.0'))  # 间距分布匹配：罚分布不罚单点
 HOLDW = float(os.environ.get('HOLDW', '0.0'))  # 长押占线惩罚
 STANDW = float(os.environ.get('STANDW', '0.0'))  # 原地档惩罚：纵连一张一串，数量翻倍就满屏竖线
 PEB = 48          # prev 位置 embedding 维
@@ -297,7 +303,19 @@ def main():
                 hb[:, 0, :] = False
                 holdpen = (prob * hb.float()).sum(-1)
                 holdpen = (holdpen * M).sum() / M.sum()
-            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum() + BANW * banpen + SBW * sbpen + HOLDW * holdpen
+            distpen = 0.
+            if DISTW > 0 and GAPHI > 0:
+                # 分布匹配：把这一批“跨拍单音”的间距档概率汇总，去对齐真谱直方图
+                # 只在“确实离开上一音 >45”的音里对齐分布，0~45 那档不进统计
+                dgb = (dprev / GRID).round().long().clamp(0, 20)
+                q = torch.zeros(dgb.shape[0], dgb.shape[1], 21)
+                q.scatter_add_(2, dgb, prob)
+                keepm = ((dprev >= GRID) & (~samebeat).unsqueeze(-1)).float() * M.unsqueeze(-1)
+                qm = (q[..., 1:] * keepm[..., 1:]).sum((0, 1))
+                qm = qm / qm.sum().clamp(min=1e-8)
+                tgt = torch.from_numpy(REALDIST).float()
+                distpen = (qm - tgt).abs().sum()
+            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum() + BANW * banpen + SBW * sbpen + HOLDW * holdpen + DISTW * distpen
             opt.zero_grad(); loss.backward(); opt.step()
             tot += float(loss.detach()); nb += 1
             if it % 200 == 0:
