@@ -298,11 +298,16 @@ def main():
             samebeat = (F[:, :, 7] > 0)
             if MINSTEP > 0:
                 short = (dprev < MINSTEP) & (~samebeat.unsqueeze(-1))
+                # 真谱自己有 20% 是原地/近原地，一刀切禁掉等于只剩左右两端可选，
+                # 那才是「像随机数」的来源。改成只禁连续小步：偶尔停一下允许，连着停不行
+                dy_true = dprev.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                prev_dy = torch.zeros_like(dy_true); prev_dy[:, 1:] = dy_true[:, :-1]
+                ban = short & (prev_dy < MINSTEP).unsqueeze(-1)
                 # 必须用有限大负数：ce 带 label_smoothing=0.03，-1e9 会被摊到其余20格，
                 # 均值拉到 -4.7e7，梯度直接污染，训练形同没学
-                lg = lg.masked_fill(short, -30.0)
+                lg = lg.masked_fill(ban, -30.0)
                 # 真值本身落在禁区时不能算交叉熵（否则 ce 冲到 1e9，训练直接炸）
-                bad = short.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                bad = ban.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
                 M = M * (~bad).float()
             prob = torch.softmax(lg, -1)
             if GAPHI > 0:

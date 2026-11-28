@@ -70,7 +70,10 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
             if GAPMIN > 0 and last_x is not None and b_cur_prev is not None and b_cur != b_cur_prev:
                 d = np.abs(GX - last_x)
                 pm = p.copy()
-                pm[d < GAPMIN] = 0.0  # 含原地：这一步必须迈 >= GAPMIN
+                # 和训练同一套：只禁「连续小步」。上一步已经没动，这一步就必须迈开；
+                # 上一步迈开了，这一步可以歇一下
+                if abs(last_dx) < GAPMIN:
+                    pm[d < GAPMIN] = 0.0
                 s2 = pm.sum()
                 if s2 > 0:
                     p = pm / s2
