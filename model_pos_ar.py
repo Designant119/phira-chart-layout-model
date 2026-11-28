@@ -69,9 +69,13 @@ def build(notes, seed=0, ckpt='arnet.pt', temp=1.0):
                 p /= s if s > 0 else 1.0
             if GAPMIN > 0 and last_x is not None and b_cur_prev is not None and b_cur != b_cur_prev:
                 d = np.abs(GX - last_x)
-                p[(d > 20) & (d < GAPMIN)] = 0.0
-                s2 = p.sum()
-                p /= s2 if s2 > 0 else 1.0
+                pm = p.copy()
+                pm[d < GAPMIN] = 0.0  # 含原地：这一步必须迈 >= GAPMIN
+                s2 = pm.sum()
+                if s2 > 0:
+                    p = pm / s2
+                # 边上无路可走时保留原分布，避免全零
+
             if HF > 0 and i > 0:
                 # 配额校正：已超配的桶压低，欠配的桶抬高，把整曲分布拉回真谱钟形
                 used = cnt / max(cnt.sum(), 1.0)

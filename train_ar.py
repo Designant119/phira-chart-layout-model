@@ -21,8 +21,10 @@ NB = 21           # 屏幕内 21 个标准格位：-450..450，每格 45 坐标
 HALF = 450.0
 GRID = 45
 BANW = float(os.environ.get('BANW', '2.0'))
-GAPLO = 20.0      # 半叠禁带下界：note 宽约 177 坐标，20-135 的间距会半叠
-GAPHI = 135.0
+GAPLO = float(os.environ.get('GAPLO', '20.0'))   # 禁带下界
+GAPHI = float(os.environ.get('GAPHI', '135.0'))  # 禁带上界
+# 实测：note 视觉宽约 20 坐标（1280 宽下 20px）。0~20 是一根竖条，45 还像一列，89 才分成两列。
+# 用户口径：要 270 以上，那就把禁带整个抬到 270。
 SBAN = float(os.environ.get('SBAN', '180'))   # 同拍两音最小间距：note 宽 177，低于这个就叠死
 SBW = float(os.environ.get('SBW', '3.0'))
 DROPDX = float(os.environ.get('DROPDX', '0.3'))
@@ -35,7 +37,17 @@ PRIORW = float(os.environ.get('PRIORW', '1.0'))
 # 去掉 0~45 那档：它是本轮崩掉的元凶（模型把所有音塞进最大桶就能骗低 loss）
 REALDIST = np.array([3.72,5.91,8.26,7.81,9.20,8.02,2.52,5.70,4.72,6.13,2.44,5.53,1.65,1.54,3.04,1.05,0.75,0.0,0.0,1.07], np.float32)
 REALDIST = REALDIST / REALDIST.sum()
-DISTW = float(os.environ.get('DISTW', '0.0'))  # 间距分布匹配：罚分布不罚单点
+DISTW = float(os.environ.get('DISTW', '0.0'))
+# 用户口径：要 270 以上。硬禁会撞墙不动，改成软奖励：落在 >= FARX 的格子直接减 loss
+FARW = float(os.environ.get('FARW', '0.0'))
+FARX = float(os.environ.get('FARX', '270.0'))
+# 相对坐标约束：这一步必须迈 >= MINSTEP 个坐标（=6 格）。直接在 logit 上把迈不到的格子封掉，
+# 不在 loss 里加罚。训练和推理用同一套约束，模型学的是「剩下的格子里挑哪个」
+MINSTEP = float(os.environ.get('MINSTEP', '0.0'))
+IDIAG = int(os.environ.get('IDIAG', '0'))
+# 真谱不是随机跳：同方向平均连 3 拍、最长 22 拍。加方向连贯奖励，
+# 让「延续上一拍的方向」直接减 loss。人味来自这个，不是来自间距本身
+DIRW = float(os.environ.get('DIRW', '0.0'))  # 每步最小位移（0=不约束，270=六格)
 HOLDW = float(os.environ.get('HOLDW', '0.0'))  # 长押占线惩罚
 STANDW = float(os.environ.get('STANDW', '0.0'))  # 原地档惩罚：纵连一张一串，数量翻倍就满屏竖线
 PEB = 48          # prev 位置 embedding 维
@@ -194,6 +206,13 @@ def evaluate(model, songs, idx):
         for it in range(0, len(idx), 64):
             F, PB, Y, M, _ = build_batch(songs, idx[it:it + 64], noise=0)
             lg, _ = model(F, PB)
+            if IDIAG:
+                _d = (GXT[None, None, :] - GXT[PB.clamp(max=NB - 1)].unsqueeze(-1)).abs()
+                _b = (_d < MINSTEP).gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                _sb = (F[:, :, 7] > 0)
+                if _b.sum() > 0:
+                    print('DIAG 真值越界 %d/%d  avg dprev_true %.0f' % (int(_b.sum()), _b.numel(),
+                          float(_d.gather(-1, Y.unsqueeze(-1)).squeeze(-1)[_b].mean())), flush=True)
             loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
             n += 1; acc += float(loss)
             pred = lg.argmax(-1)
@@ -263,19 +282,34 @@ def main():
                             src = src.sign().float()
                             F[:, :, 11 + j] = torch.where(mix, src, F[:, :, 11 + j])
             lg, _ = model(F, PB)
+            if IDIAG:
+                _d = (GXT[None, None, :] - GXT[PB.clamp(max=NB - 1)].unsqueeze(-1)).abs()
+                _b = (_d < MINSTEP).gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                _sb = (F[:, :, 7] > 0)
+                if _b.sum() > 0:
+                    print('DIAG 真值越界 %d/%d  avg dprev_true %.0f' % (int(_b.sum()), _b.numel(),
+                          float(_d.gather(-1, Y.unsqueeze(-1)).squeeze(-1)[_b].mean())), flush=True)
             if PRIORW > 0:
                 # 位置先验：真谱每格的占比当 logit 偏置，模型不至于一路推到边上
                 lp = torch.from_numpy(np.log(PRIORC / PRIORC.sum() + 1e-8)).float()
                 lg = lg + PRIORW * lp[None, None, :]
             banpen = 0.; sbpen = 0.
+            dprev = (GXT[None, None, :] - GXT[PB.clamp(max=NB - 1)].unsqueeze(-1)).abs()
+            samebeat = (F[:, :, 7] > 0)
+            if MINSTEP > 0:
+                short = (dprev < MINSTEP) & (~samebeat.unsqueeze(-1))
+                # 必须用有限大负数：ce 带 label_smoothing=0.03，-1e9 会被摊到其余20格，
+                # 均值拉到 -4.7e7，梯度直接污染，训练形同没学
+                lg = lg.masked_fill(short, -30.0)
+                # 真值本身落在禁区时不能算交叉熵（否则 ce 冲到 1e9，训练直接炸）
+                bad = short.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                M = M * (~bad).float()
+            prob = torch.softmax(lg, -1)
             if GAPHI > 0:
                 # 半叠禁带：跨拍不许落在距上一音 20..135 的区间（真谱这段只占 4%）
                 # 不遮 logits，直接把禁带类上的概率压到 0，权重才会真的记住这条约束
-                dprev = (GXT[None, None, :] - GXT[PB.clamp(max=NB - 1)].unsqueeze(-1)).abs()
-                samebeat = (F[:, :, 7] > 0)
-                ban = (dprev > GAPLO) & (dprev < GAPHI) & (~samebeat.unsqueeze(-1))
+                ban = (dprev >= GAPLO) & (dprev < GAPHI) & (~samebeat.unsqueeze(-1))  # >= 而非 >：GAPLO=0 时把「原地」也关进禁带，否则不动永远是免罚的避风港
                 ban[:, 0, :] = False
-                prob = torch.softmax(lg, -1)
                 banpen = (prob * ban.float()).sum(-1)
                 banpen = (banpen * M).sum() / M.sum()
                 # 同拍多押最小间距：同一拍的第二个音起，不许落在前一颗 180 以内
@@ -315,7 +349,19 @@ def main():
                 qm = qm / qm.sum().clamp(min=1e-8)
                 tgt = torch.from_numpy(REALDIST).float()
                 distpen = (qm - tgt).abs().sum()
-            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum() + BANW * banpen + SBW * sbpen + HOLDW * holdpen + DISTW * distpen
+            dirbon = 0.
+            if DIRW > 0:
+                sdx = GXT[None, None, :] - GXT[PB.clamp(max=NB - 1)].unsqueeze(-1)
+                prev_dx = torch.zeros_like(sdx[:, :, 0])
+                prev_dx[:, 1:] = (GXT[Y[:, :-1]] - GXT[PB[:, :-1].clamp(max=NB - 1)])
+                same_dir = (torch.sign(sdx) * torch.sign(prev_dx).unsqueeze(-1)) > 0
+                ok = same_dir & (~samebeat.unsqueeze(-1)) & (dprev >= MINSTEP if MINSTEP > 0 else dprev > 0)
+                dirbon = (((prob * ok.float()).sum(-1)) * M).sum() / M.sum()
+            farbon = 0.
+            if FARW > 0:
+                far = (dprev >= FARX) & (~samebeat.unsqueeze(-1))
+                farbon = ((prob * far.float()).sum(-1) * M).sum() / M.sum()
+            loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M2.reshape(-1)).sum() / M2.sum() + BANW * banpen + SBW * sbpen + HOLDW * holdpen + DISTW * distpen - FARW * farbon - DIRW * dirbon
             opt.zero_grad(); loss.backward(); opt.step()
             tot += float(loss.detach()); nb += 1
             if it % 200 == 0:
@@ -327,10 +373,20 @@ def main():
             for it in range(0, len(vidx), 64):
                 F, PB, Y, M, _ = build_batch(songs, vidx[it:it + 64], noise=0)
                 lg, _ = model(F, PB)
-                loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
-                vl += float(loss); vn += 1
+                dprev = (GXT[None, None, :] - GXT[PB.clamp(max=NB - 1)].unsqueeze(-1)).abs()
+                samebeat = (F[:, :, 7] > 0)
+                if MINSTEP > 0:
+                    short = (dprev < MINSTEP) & (~samebeat.unsqueeze(-1))
+                    lg = lg.masked_fill(short, -30.0)
+                    M = M * (~short.gather(-1, Y.unsqueeze(-1)).squeeze(-1)).float()
+                if M.sum() > 0:
+                    loss = (ce(lg.reshape(-1, NB), Y.reshape(-1)) * M.reshape(-1)).sum() / M.sum()
+                    vl += float(loss); vn += 1
                 pred = lg.argmax(-1); mask = M > 0
-                xs.append(g2x(pred[mask].numpy()))
+                if int(mask.sum()) > 0:
+                    xs.append(g2x(pred[mask].numpy()))
+            if not xs:
+                print('  验证 全部样本被 MINSTEP 屏蔽，跳过', flush=True); continue
             x = np.concatenate(xs)
             print('  验证 音 %d |x|中位%.0f(真%.0f) <135占%.1f%%(真%.1f%%) >400占%.1f%%(真%.1f%%) loss %.4f' % (
                 len(x), np.median(np.abs(x)), 253, np.mean(np.abs(x) < 135) * 100, 23.2,
